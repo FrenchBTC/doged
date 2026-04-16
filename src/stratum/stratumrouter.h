@@ -91,6 +91,9 @@ public:
     /** Called by StratumServer when the chain tip changes. */
     void OnNewTip(int height);
 
+    /** Called when an external chain's merge-mine work changes. */
+    void OnExternalWorkUpdate(const std::string &chainName);
+
     /**
      * Submit a share. Routes to local validation or upstream proxy
      * depending on the active tier.

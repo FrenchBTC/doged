@@ -112,6 +112,16 @@ void StratumRouter::OnNewTip(int height) {
     EvaluateAndSwitch();
 }
 
+void StratumRouter::OnExternalWorkUpdate(const std::string &chainName) {
+    if (m_activeTier.load() == RoutingTier::LOCAL) {
+        LogPrint(BCLog::STRATUM,
+                 "Stratum router: external chain %s has new work, "
+                 "refreshing local job\n",
+                 chainName);
+        LocalCreateAndBroadcast(false);
+    }
+}
+
 bool StratumRouter::RouteSubmit(int64_t minerId, uint64_t jobId,
                                  const std::string &extranonce1,
                                  const UniValue &submitParams,
