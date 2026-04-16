@@ -343,6 +343,7 @@ add_subdirectory(crypto)
 add_subdirectory(leveldb)
 add_subdirectory(secp256k1)
 add_subdirectory(univalue)
+add_subdirectory(api)
 
 # Find the git root, and returns the full path to the .git/logs/HEAD file if
 # it exists.
@@ -692,6 +693,7 @@ add_library(server
 	pow/auxpow.cpp
 	pow/pow.cpp
 	rest.cpp
+	stratum/mergemine.cpp
 	stratum/stratum.cpp
 	stratum/stratumaux.cpp
 	stratum/stratumconfig.cpp
@@ -734,6 +736,7 @@ target_link_libraries(server
 	bitcoinconsensus
 	leveldb
 	memenv
+	api
 )
 
 link_event(server event)

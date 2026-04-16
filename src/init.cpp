@@ -64,6 +64,8 @@
 #include <rpc/server.h>
 #include <rpc/util.h>
 #include <scheduler.h>
+#include <api/api_server.h>
+#include <stratum/mergemine.h>
 #include <stratum/stratum.h>
 #include <stratum/stratumconfig.h>
 #include <script/scriptcache.h>
@@ -207,6 +209,7 @@ void Interrupt(NodeContext &node) {
     InterruptHTTPRPC();
     InterruptRPC();
     InterruptREST();
+    InterruptAPI();
     stratum::InterruptStratumServer();
     InterruptTorControl();
     InterruptMapPort();
@@ -248,7 +251,10 @@ void Shutdown(NodeContext &node) {
     StopHTTPRPC();
     StopREST();
     StopRPC();
+    StopAPI();
+    stratum::StopMergeMineManager();
     stratum::StopStratumServer();
+    stratum::StopGlobalAuxManager();
     StopHTTPServer();
     for (const auto &client : node.chain_clients) {
         client->flush();
@@ -1574,6 +1580,10 @@ static bool AppInitServers(Config &config,
 
     StartHTTPServer();
 
+    if (args.GetBoolArg("-dashboard", true)) {
+        StartAPI(node);
+    }
+
     // Initialize Stratum mining server if enabled
     auto stratumConfig = stratum::ParseStratumConfig(args);
     if (stratumConfig && stratumConfig->enabled) {
@@ -1719,9 +1729,22 @@ void InitParameterInteraction(ArgsManager &args) {
  * Note that this is called very early in the process lifetime, so you should be
  * careful about what global state you rely on here.
  */
+static void PrintStartupBanner() {
+    LogPrintf("\n");
+    LogPrintf("  ____                   ____\n");
+    LogPrintf(" |  _ \\  ___   __ _  ___|  _ \\\n");
+    LogPrintf(" | | | |/ _ \\ / _` |/ _ \\ | | |\n");
+    LogPrintf(" | |_| | (_) | (_| |  __/ |_| |\n");
+    LogPrintf(" |____/ \\___/ \\__, |\\___|____/\n");
+    LogPrintf("              |___/\n");
+    LogPrintf("  Much Blockchain. Very Secure. Wow.\n");
+    LogPrintf("\n");
+}
+
 void InitLogging(const ArgsManager &args) {
     init::SetLoggingOptions(args);
     init::LogPackageVersion();
+    PrintStartupBanner();
 }
 
 namespace { // Variables internal to initialization process only
@@ -3074,6 +3097,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     uiInterface.InitMessage(_("Done loading").translated);
 
+    // Initialise the global aux manager so createauxblock/submitauxblock
+    // RPCs share a persistent work cache.
+    stratum::InitGlobalAuxManager(chainman.ActiveChainstate(),
+                                  node.mempool.get(), chainparams);
+
     // Start Stratum server now that chainstate is fully loaded
     {
         auto stratumConfig = stratum::ParseStratumConfig(args);
@@ -3087,7 +3115,65 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 return InitError(_("Failed to initialize Stratum server."));
             }
             stratum::StartStratumServer();
+
+            // Start multi-chain merge mining if configured
+            if (!stratumConfig->mergeMineChains.empty()) {
+                stratum::InitMergeMineManager();
+                auto *mm = stratum::GetMergeMineManager();
+                for (const auto &entry :
+                     stratumConfig->mergeMineChains) {
+                    stratum::ExternalChainConfig cfg;
+                    cfg.name = entry.name;
+                    cfg.rpcHost = entry.rpcHost;
+                    cfg.rpcPort = entry.rpcPort;
+                    cfg.rpcUser = entry.rpcUser;
+                    cfg.rpcPassword = entry.rpcPassword;
+                    cfg.chainId = entry.chainId;
+                    cfg.pollIntervalMs = entry.pollIntervalMs;
+                    mm->AddChain(cfg);
+                }
+                // Wire work-change callback to trigger fresh stratum jobs
+                mm->SetWorkCallback(
+                    [](const std::string &chainName,
+                       const stratum::ExternalAuxWork &) {
+                        auto *srv = stratum::GetStratumServer();
+                        if (srv) {
+                            srv->OnExternalWorkUpdate(chainName);
+                        }
+                    });
+
+                mm->Start(stratumConfig->coinbaseAddress);
+            }
         }
+    }
+
+    // Print startup summary
+    {
+        LogPrintf("=== doged startup summary ===\n");
+        LogPrintf("  Chain:      %s\n", chainparams.GetChainTypeString());
+        LogPrintf("  Datadir:    %s\n",
+                  fs::PathToString(gArgs.GetDataDirNet()));
+
+        auto stratumConfig = stratum::ParseStratumConfig(args);
+        if (stratumConfig && stratumConfig->enabled) {
+            LogPrintf("  Stratum:    %s:%d\n", stratumConfig->bind,
+                      stratumConfig->port);
+            if (!stratumConfig->mergeMineChains.empty()) {
+                LogPrintf("  MergeMine:  %zu chain(s) —",
+                          stratumConfig->mergeMineChains.size());
+                for (const auto &c : stratumConfig->mergeMineChains) {
+                    LogPrintf(" %s", c.name);
+                }
+                LogPrintf("\n");
+            }
+        } else {
+            LogPrintf("  Stratum:    disabled\n");
+        }
+
+        if (args.GetBoolArg("-dashboard", false)) {
+            LogPrintf("  Dashboard:  enabled\n");
+        }
+        LogPrintf("=============================\n");
     }
 
     for (const auto &client : node.chain_clients) {
