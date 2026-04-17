@@ -27,18 +27,6 @@ static constexpr size_t DEFAULT_JOB_CACHE_SIZE = 8;
 static constexpr double MIN_DIFFICULTY = 0.0000001;
 static constexpr double MAX_DIFFICULTY = 1e12;
 
-/**
- * A remote upstream pool endpoint for proxy/failover routing.
- * Parsed from -stratumproxy=host:port:user:pass:priority
- */
-struct StratumPoolEntry {
-    std::string host;
-    uint16_t port = 3333;
-    std::string username;
-    std::string password = "x";
-    int priority = 0;
-};
-
 struct StratumConfig {
     bool enabled = false;
     std::string bind = "0.0.0.0";
@@ -52,11 +40,6 @@ struct StratumConfig {
     int workerTimeoutSec = DEFAULT_WORKER_TIMEOUT_SEC;
     size_t jobCacheSize = DEFAULT_JOB_CACHE_SIZE;
     std::string coinbaseAddress;
-
-    // Tiered routing
-    bool preferLocal = true;     // Use local node when synced (tier 1)
-    bool warnSoloMining = true;  // Warn when falling through to local-only
-    std::vector<StratumPoolEntry> upstreamPools; // Proxy targets (tier 2+)
 
     /**
      * External chain for multi-chain merged mining via RPC.

@@ -1,5 +1,14 @@
 abc-ci-builds
 
+# Litecoin build artifacts
+contrib/litecoin/src/litecoind
+contrib/litecoin/src/litecoin-cli
+contrib/litecoin/src/litecoin-tx
+contrib/litecoin/src/litecoin-wallet
+contrib/litecoin/src/qt/litecoin-qt
+contrib/litecoin/src/test/test_litecoin
+contrib/litecoin/src/bench/bench_litecoin
+
 *.tar.gz
 
 *.exe

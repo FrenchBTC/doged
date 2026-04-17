@@ -29,8 +29,6 @@ namespace stratum {
 
 static std::unique_ptr<StratumServer> g_stratumServer;
 
-// --- StratumServer ---
-
 StratumServer::StratumServer(const StratumConfig &config,
                              Chainstate &chainstate,
                              const CTxMemPool *mempool,
@@ -39,7 +37,6 @@ StratumServer::StratumServer(const StratumConfig &config,
     : m_config(config), m_chainstate(chainstate), m_chainParams(chainParams),
       m_chainman(chainman) {
 
-    // Determine coinbase script
     CScript coinbaseScript;
     if (!m_config.coinbaseAddress.empty()) {
         CTxDestination dest =
@@ -52,21 +49,9 @@ StratumServer::StratumServer(const StratumConfig &config,
         coinbaseScript = CScript() << OP_TRUE;
     }
 
-    // Build upstream pool list from config
-    std::vector<UpstreamPool> pools;
-    for (const auto &entry : m_config.upstreamPools) {
-        UpstreamPool pool;
-        pool.host = entry.host;
-        pool.port = entry.port;
-        pool.username = entry.username;
-        pool.password = entry.password;
-        pool.priority = entry.priority;
-        pools.push_back(pool);
-    }
-
-    m_router = std::make_unique<StratumRouter>(
-        config, pools, chainstate, mempool, chainParams, chainman,
-        coinbaseScript);
+    m_jobMgr = std::make_unique<StratumJobManager>(
+        chainstate, mempool, chainParams, coinbaseScript,
+        /* extranonce1Size */ 4, /* extranonce2Size */ 4);
 
     m_auxMgr = std::make_unique<StratumAuxManager>(
         chainstate, mempool, chainParams, coinbaseScript);
@@ -79,8 +64,6 @@ StratumServer::~StratumServer() {
 bool StratumServer::Start() {
     m_startTime = GetTime();
 
-    // Thread-safety: BroadcastJob/BroadcastRawNotify are called from the
-    // validation thread while the event loop runs on m_eventThread.
 #ifdef WIN32
     evthread_use_windows_threads();
 #else
@@ -117,42 +100,13 @@ bool StratumServer::Start() {
     m_running.store(true);
     m_interrupt.store(false);
 
-    // Wire router callbacks so it can push data to our miners
-    RouterDownstreamCallbacks routerCbs;
-    routerCbs.broadcastNotify = [this](const std::string &raw) {
-        BroadcastRawNotify(raw);
-    };
-    routerCbs.broadcastDifficulty = [this](double diff) {
-        BroadcastDifficultyAll(diff);
-    };
-    routerCbs.submitResult = [this](int64_t minerId, bool accepted,
-                                     const std::string &error) {
-        HandleProxySubmitResult(minerId, accepted, error);
-    };
-    routerCbs.tierChanged = [this](RoutingTier tier,
-                                    const std::string &detail) {
-        LogPrintf("Stratum: routing tier → %s (%s)\n",
-                  TierName(tier), detail);
-    };
-    m_router->SetCallbacks(std::move(routerCbs));
-
-    // Start the router (connects proxies, evaluates tiers)
-    if (!m_router->Start()) {
-        LogPrintf("Stratum: failed to start router\n");
-    }
-
-    // Register for chain tip notifications
     RegisterValidationInterface(this);
-
-    // Register stats HTTP endpoint
     RegisterStratumHTTPHandlers([this]() { return GetStats(); });
 
-    // Start event loop in a background thread
     m_eventThread = std::thread([this]() { EventLoop(); });
 
-    LogPrintf("Stratum: server started on %s:%d (tier: %s)\n",
-              m_config.bind, m_config.port,
-              TierName(m_router->GetActiveTier()));
+    LogPrintf("Stratum: server started on %s:%d\n",
+              m_config.bind, m_config.port);
 
     return true;
 }
@@ -173,10 +127,6 @@ void StratumServer::Stop() {
 
     if (m_eventThread.joinable()) {
         m_eventThread.join();
-    }
-
-    if (m_router) {
-        m_router->Stop();
     }
 
     UnregisterValidationInterface(this);
@@ -210,7 +160,6 @@ void StratumServer::Stop() {
 
 void StratumServer::EventLoop() {
     while (!m_interrupt.load() && !ShutdownRequested()) {
-        // Run event loop with a 1-second timeout for periodic checks
         struct timeval tv = {1, 0};
         event_base_loopexit(m_eventBase, &tv);
         event_base_dispatch(m_eventBase);
@@ -264,7 +213,6 @@ void StratumServer::HandleAccept(int fd, struct sockaddr *addr) {
                                BEV_OPT_CLOSE_ON_FREE | BEV_OPT_THREADSAFE);
     session->bev = bev;
 
-    // Store context for callbacks
     auto *cbCtx = new std::pair<StratumServer *, uint32_t>(this, sessionId);
     bufferevent_setcb(bev, OnRead, nullptr, OnEvent, cbCtx);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
@@ -347,7 +295,6 @@ void StratumServer::ProcessMessage(ClientSession &session,
         } else if (req->method == "mining.submit") {
             HandleSubmit(session, *req);
         } else {
-            // Unknown method
             UniValue err(UniValue::VARR);
             err.push_back(20);
             err.push_back("Unknown method");
@@ -355,7 +302,6 @@ void StratumServer::ProcessMessage(ClientSession &session,
             SendResponse(session, req->id, UniValue(UniValue::VNULL), err);
         }
     }
-    // Notifications and responses from client are ignored
 }
 
 void StratumServer::HandleSubscribe(ClientSession &session,
@@ -385,24 +331,18 @@ void StratumServer::HandleAuthorize(ClientSession &session,
     }
     SendResponse(session, req.id, *result, UniValue(UniValue::VNULL));
 
-    // Send initial difficulty
     SendDifficulty(session.sessionId, m_config.defaultDifficulty);
 
-    // Send current job if in local mode
-    if (m_router && m_router->GetActiveTier() == RoutingTier::LOCAL) {
-        auto *jobMgr = m_router->GetJobManager();
-        if (jobMgr && jobMgr->JobCount() > 0) {
-            auto jobResult = jobMgr->CreateJob(false);
-            if (jobResult) {
-                UniValue notifyParams =
-                    jobMgr->FormatNotifyParams(*jobResult);
-                std::string data =
-                    SerializeNotify("mining.notify", notifyParams);
-                SendToClient(session, data);
-            }
+    if (m_jobMgr && m_jobMgr->JobCount() > 0) {
+        auto jobResult = m_jobMgr->CreateJob(false);
+        if (jobResult) {
+            UniValue notifyParams =
+                m_jobMgr->FormatNotifyParams(*jobResult);
+            std::string data =
+                SerializeNotify("mining.notify", notifyParams);
+            SendToClient(session, data);
         }
     }
-    // In proxy mode, the next upstream mining.notify will be relayed
 }
 
 void StratumServer::HandleSubmit(ClientSession &session,
@@ -417,34 +357,6 @@ void StratumServer::HandleSubmit(ClientSession &session,
         return;
     }
 
-    RoutingTier tier = m_router ? m_router->GetActiveTier()
-                                : RoutingTier::NONE;
-
-    // --- Proxy mode: forward upstream, response comes via callback ---
-    if (tier == RoutingTier::PROXY) {
-        // We're already under m_cs from HandleRead → ProcessMessage
-        m_pendingProxySubmits[req.id] = session.sessionId;
-        if (!m_router->RouteSubmit(req.id, 0, "", req.params, nullptr)) {
-            m_pendingProxySubmits.erase(req.id);
-            UniValue err(UniValue::VARR);
-            err.push_back(20);
-            err.push_back("No upstream available");
-            err.push_back(UniValue(UniValue::VNULL));
-            SendResponse(session, req.id, UniValue(false), err);
-        }
-        return;
-    }
-
-    // --- Local mode: validate share locally ---
-    if (tier == RoutingTier::NONE) {
-        UniValue err(UniValue::VARR);
-        err.push_back(20);
-        err.push_back("No mining backend available");
-        err.push_back(UniValue(UniValue::VNULL));
-        SendResponse(session, req.id, UniValue(false), err);
-        return;
-    }
-
     auto subResult = ParseSubmitParams(req.params);
     if (!subResult) {
         UniValue err(UniValue::VARR);
@@ -455,9 +367,8 @@ void StratumServer::HandleSubmit(ClientSession &session,
         return;
     }
 
-    auto *jobMgr = m_router->GetJobManager();
-    const StratumJob *job = jobMgr ? jobMgr->GetJob(subResult->jobId)
-                                    : nullptr;
+    const StratumJob *job = m_jobMgr ? m_jobMgr->GetJob(subResult->jobId)
+                                      : nullptr;
     if (!job) {
         session.worker->RecordShareStale();
         m_totalSharesStale++;
@@ -507,14 +418,12 @@ void StratumServer::HandleSubmit(ClientSession &session,
         return;
     }
 
-    // Share is accepted (meets at least worker difficulty)
     session.worker->RecordShareAccepted(
         session.worker->GetCurrentDifficulty());
     m_totalSharesAccepted++;
     SendResponse(session, req.id, UniValue(true),
                  UniValue(UniValue::VNULL));
 
-    // DOGE block found
     if (result.dogeBlockFound) {
         m_blocksFound++;
         SubmitBlock(*job, session.worker->GetExtranonce1(), *subResult,
@@ -523,8 +432,6 @@ void StratumServer::HandleSubmit(ClientSession &session,
                   session.worker->GetWorkerName(), job->height);
     }
 
-    // Submit AuxPoW proof to each external chain whose target was met,
-    // regardless of whether a DOGE block was also found.
     if (!result.auxChainsSolved.empty()) {
         auto *mm = GetMergeMineManager();
         if (mm) {
@@ -533,7 +440,6 @@ void StratumServer::HandleSubmit(ClientSession &session,
                     *job, session.worker->GetExtranonce1(),
                     *subResult, chainName);
 
-                // Find the aux hash for this chain
                 uint256 auxHash;
                 for (const auto &t : job->auxChainTargets) {
                     if (t.chainName == chainName) {
@@ -574,73 +480,17 @@ void StratumServer::SendResponse(ClientSession &session, int64_t id,
 }
 
 void StratumServer::BroadcastJob(const StratumJob &job) {
-    auto *jobMgr = m_router ? m_router->GetJobManager() : nullptr;
-    if (!jobMgr) {
+    if (!m_jobMgr) {
         return;
     }
     LOCK(m_cs);
-    UniValue notifyParams = jobMgr->FormatNotifyParams(job);
+    UniValue notifyParams = m_jobMgr->FormatNotifyParams(job);
     std::string data = SerializeNotify("mining.notify", notifyParams);
 
     for (auto &[id, session] : m_sessions) {
         if (session->worker->GetState() == StratumWorker::State::AUTHORIZED) {
             SendToClient(*session, data);
         }
-    }
-}
-
-void StratumServer::BroadcastRawNotify(const std::string &rawLine) {
-    LOCK(m_cs);
-    for (auto &[id, session] : m_sessions) {
-        if (session->worker->GetState() == StratumWorker::State::AUTHORIZED) {
-            SendToClient(*session, rawLine);
-        }
-    }
-}
-
-void StratumServer::BroadcastDifficultyAll(double difficulty) {
-    LOCK(m_cs);
-    UniValue params(UniValue::VARR);
-    params.push_back(difficulty);
-    std::string data = SerializeNotify("mining.set_difficulty", params);
-    for (auto &[id, session] : m_sessions) {
-        if (session->worker->GetState() == StratumWorker::State::AUTHORIZED) {
-            SendToClient(*session, data);
-        }
-    }
-}
-
-void StratumServer::HandleProxySubmitResult(int64_t minerId, bool accepted,
-                                             const std::string &error) {
-    LOCK(m_cs);
-    // Find the session that issued this submit
-    auto pendingIt = m_pendingProxySubmits.find(minerId);
-    if (pendingIt == m_pendingProxySubmits.end()) {
-        return;
-    }
-    uint32_t sessionId = pendingIt->second;
-    m_pendingProxySubmits.erase(pendingIt);
-
-    auto sessionIt = m_sessions.find(sessionId);
-    if (sessionIt == m_sessions.end()) {
-        return;
-    }
-
-    auto &session = *sessionIt->second;
-    if (accepted) {
-        session.worker->RecordShareAccepted(
-            session.worker->GetCurrentDifficulty());
-        m_totalSharesAccepted++;
-        SendResponse(session, minerId, UniValue(true),
-                     UniValue(UniValue::VNULL));
-    } else {
-        session.worker->RecordShareRejected();
-        m_totalSharesRejected++;
-        UniValue err(UniValue::VARR);
-        err.push_back(20);
-        err.push_back(error.empty() ? "Rejected by upstream" : error);
-        err.push_back(UniValue(UniValue::VNULL));
-        SendResponse(session, minerId, UniValue(false), err);
     }
 }
 
@@ -674,30 +524,6 @@ StratumServerStats StratumServer::GetStats() const {
         }
     }
 
-    // Routing info
-    if (m_router) {
-        stats.activeTier = TierName(m_router->GetActiveTier());
-        stats.activeProxyIndex = m_router->GetActiveProxyIndex();
-        for (size_t i = 0; i < m_router->GetProxyCount(); ++i) {
-            ProxyHealth h = m_router->GetProxyHealth(i);
-            UpstreamPoolStats ps;
-            ps.label = m_config.upstreamPools.size() > i
-                           ? (m_config.upstreamPools[i].host + ":" +
-                              std::to_string(m_config.upstreamPools[i].port))
-                           : "unknown";
-            ps.connected = h.connected;
-            ps.healthy = h.connected && h.authorized &&
-                         h.consecutiveErrors < 5;
-            ps.priority = m_config.upstreamPools.size() > i
-                              ? m_config.upstreamPools[i].priority
-                              : 0;
-            ps.consecutiveErrors = h.consecutiveErrors;
-            ps.lastError = h.lastError;
-            stats.upstreamPools.push_back(ps);
-        }
-    }
-
-    // Network difficulty from chain tip
     LOCK(cs_main);
     const CBlockIndex *tip = m_chainstate.m_chain.Tip();
     if (tip) {
@@ -724,9 +550,7 @@ void StratumServer::OnExternalWorkUpdate(const std::string &chainName) {
     if (!m_running.load()) {
         return;
     }
-    if (m_router) {
-        m_router->OnExternalWorkUpdate(chainName);
-    }
+    CreateAndBroadcastJob(false);
 }
 
 void StratumServer::UpdatedBlockTip(const CBlockIndex *pindexNew,
@@ -742,36 +566,27 @@ void StratumServer::UpdatedBlockTip(const CBlockIndex *pindexNew,
     LogPrint(BCLog::STRATUM, "Stratum: new tip at height %d\n",
              pindexNew->nHeight);
 
-    // Delegate to the router — it decides whether to create a local job
-    // or whether a proxy is handling notifications.
-    if (m_router) {
-        m_router->OnNewTip(pindexNew->nHeight);
-    }
+    CreateAndBroadcastJob(true);
 }
 
 void StratumServer::CreateAndBroadcastJob(bool cleanJobs) {
-    // Delegate to router for local-mode job creation
-    if (m_router && m_router->GetActiveTier() == RoutingTier::LOCAL) {
-        auto *jobMgr = m_router->GetJobManager();
-        if (!jobMgr) {
-            return;
-        }
-        auto jobResult = jobMgr->CreateJob(cleanJobs);
-        if (!jobResult) {
-            LogPrintf("Stratum: failed to create job: %s\n",
-                      util::ErrorString(jobResult).original);
-            return;
-        }
-        jobMgr->PruneJobs(m_config.jobCacheSize);
-        BroadcastJob(*jobResult);
+    if (!m_jobMgr) {
+        return;
     }
+    auto jobResult = m_jobMgr->CreateJob(cleanJobs);
+    if (!jobResult) {
+        LogPrintf("Stratum: failed to create job: %s\n",
+                  util::ErrorString(jobResult).original);
+        return;
+    }
+    m_jobMgr->PruneJobs(m_config.jobCacheSize);
+    BroadcastJob(*jobResult);
 }
 
 void StratumServer::PeriodicMaintenance() {
     LOCK(m_cs);
     int64_t now = GetTime();
 
-    // Clean up timed-out workers
     std::vector<uint32_t> toRemove;
     for (auto &[id, session] : m_sessions) {
         if (session->worker->IsTimedOut(m_config.workerTimeoutSec, now)) {
@@ -779,7 +594,6 @@ void StratumServer::PeriodicMaintenance() {
             continue;
         }
 
-        // Vardiff retarget
         if (session->worker->ShouldRetargetDifficulty(m_config, now)) {
             double newDiff = session->worker->CalcNewDifficulty(m_config, now);
             if (std::abs(newDiff - session->worker->GetCurrentDifficulty()) /

@@ -54,20 +54,6 @@ void RegisterStratumArgs(ArgsManager &args) {
     args.AddArg("-stratumcoinbase=<address>",
                 "Dogecoin address for Stratum coinbase payouts",
                 ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
-    args.AddArg("-stratumproxy=<spec>",
-                "Add an upstream pool for proxy/failover routing. Format: "
-                "host:port:user[:pass[:priority]]. Can be specified multiple "
-                "times. Lower priority = preferred. (default: none)",
-                ArgsManager::ALLOW_ANY,
-                OptionsCategory::BLOCK_CREATION);
-    args.AddArg("-stratumpreferlocal",
-                "Prefer local node mining when synced over proxy "
-                "(default: 1). Set to 0 to always prefer upstream pools.",
-                ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
-    args.AddArg("-stratumwarnsolo",
-                "Log a warning when solo-mining locally with no upstream "
-                "pool available (default: 1)",
-                ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     args.AddArg("-mergemine=<spec>",
                 "Add an external chain for multi-chain merged mining via "
                 "RPC. Format: name:host:port:user:pass:chainid[:poll_ms]. "
@@ -137,56 +123,6 @@ util::Result<StratumConfig> ParseStratumConfig(const ArgsManager &args) {
     config.workerTimeoutSec = static_cast<int>(timeout);
 
     config.coinbaseAddress = args.GetArg("-stratumcoinbase", "");
-
-    // Tiered routing options
-    config.preferLocal =
-        args.GetBoolArg("-stratumpreferlocal", true);
-    config.warnSoloMining =
-        args.GetBoolArg("-stratumwarnsolo", true);
-
-    // Parse upstream pool specs: host:port:user[:pass[:priority]]
-    for (const auto &spec : args.GetArgs("-stratumproxy")) {
-        StratumPoolEntry entry;
-        std::vector<std::string> parts;
-        std::string token;
-        for (char c : spec) {
-            if (c == ':' && parts.size() < 4) {
-                // Split on first 4 colons only (host:port:user:pass:priority)
-                // but host could be IPv4, so port delimiter is after first part
-                parts.push_back(token);
-                token.clear();
-            } else {
-                token += c;
-            }
-        }
-        parts.push_back(token);
-
-        if (parts.size() < 3) {
-            return {{strprintf(
-                Untranslated("-stratumproxy format: host:port:user[:pass[:priority]], got '%s'"),
-                spec)}};
-        }
-
-        entry.host = parts[0];
-        entry.port = static_cast<uint16_t>(atoi(parts[1].c_str()));
-        if (entry.port == 0) {
-            return {{strprintf(
-                Untranslated("Invalid port in -stratumproxy '%s'"), spec)}};
-        }
-        entry.username = parts[2];
-        if (parts.size() > 3 && !parts[3].empty()) {
-            entry.password = parts[3];
-        }
-        if (parts.size() > 4) {
-            entry.priority = atoi(parts[4].c_str());
-        } else {
-            // Auto-assign priority by order of appearance
-            entry.priority =
-                static_cast<int>(config.upstreamPools.size());
-        }
-
-        config.upstreamPools.push_back(entry);
-    }
 
     // Parse merge-mine chain specs: name:host:port:user:pass:chainid[:poll_ms]
     for (const auto &spec : args.GetArgs("-mergemine")) {

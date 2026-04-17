@@ -5,6 +5,7 @@ create_test_suite(stratum)
 add_dependencies(check check-stratum)
 
 add_boost_unit_tests_to_suite(stratum test_stratum
+	fixture.cpp
 	TESTS
 		stratumconfig_tests.cpp
 		stratumprotocol_tests.cpp
@@ -15,4 +16,5 @@ add_boost_unit_tests_to_suite(stratum test_stratum
 		stratumstats_tests.cpp
 )
 
-target_link_libraries(test_stratum server testutil)
+find_package(Boost 1.64 REQUIRED COMPONENTS unit_test_framework)
+target_link_libraries(test_stratum server testutil Boost::unit_test_framework)

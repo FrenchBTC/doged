@@ -55,23 +55,6 @@ UniValue FormatStatsJson(const StratumServerStats &stats) {
     }
     obj.pushKV("workers", workersArr);
 
-    // Routing info
-    obj.pushKV("activeTier", stats.activeTier);
-    obj.pushKV("activeProxyIndex", stats.activeProxyIndex);
-
-    UniValue poolsArr(UniValue::VARR);
-    for (const auto &p : stats.upstreamPools) {
-        UniValue pObj(UniValue::VOBJ);
-        pObj.pushKV("label", p.label);
-        pObj.pushKV("connected", p.connected);
-        pObj.pushKV("healthy", p.healthy);
-        pObj.pushKV("priority", p.priority);
-        pObj.pushKV("consecutiveErrors", p.consecutiveErrors);
-        pObj.pushKV("lastError", p.lastError);
-        poolsArr.push_back(pObj);
-    }
-    obj.pushKV("upstreamPools", poolsArr);
-
     return obj;
 }
 

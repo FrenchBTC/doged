@@ -9,7 +9,6 @@
 #include <stratum/stratumconfig.h>
 #include <stratum/stratumjob.h>
 #include <stratum/stratumprotocol.h>
-#include <stratum/stratumrouter.h>
 #include <stratum/stratumstats.h>
 #include <stratum/stratumsubmit.h>
 #include <stratum/stratumworker.h>
@@ -32,17 +31,6 @@ class CTxMemPool;
 
 namespace stratum {
 
-/**
- * The main Stratum mining server.
- *
- * Listens for TCP connections from miners, manages subscriptions, creates
- * block templates, distributes work via mining.notify, validates submitted
- * shares (Scrypt PoW), and submits found blocks.
- *
- * Lifecycle follows the same pattern as httpserver:
- *   InitStratumServer → StartStratumServer → InterruptStratumServer →
- *   StopStratumServer
- */
 class StratumServer final : public CValidationInterface {
 public:
     StratumServer(const StratumConfig &config, Chainstate &chainstate,
@@ -54,22 +42,14 @@ public:
     void Interrupt();
     void Stop();
 
-    /** Broadcast a new job to all authorized workers. */
     void BroadcastJob(const StratumJob &job);
-
-    /** Send mining.set_difficulty to a specific worker. */
     void SendDifficulty(uint32_t sessionId, double difficulty);
-
-    /** Get a snapshot of server stats. */
     StratumServerStats GetStats() const;
-
     size_t GetWorkerCount() const;
 
-    /** Called when an external chain's merge-mine work changes. */
     void OnExternalWorkUpdate(const std::string &chainName);
 
 protected:
-    // CValidationInterface: called when the active chain tip changes
     void UpdatedBlockTip(const CBlockIndex *pindexNew,
                          const CBlockIndex *pindexFork,
                          bool fInitialDownload) override;
@@ -88,7 +68,7 @@ private:
     const CChainParams &m_chainParams;
     ChainstateManager &m_chainman;
 
-    std::unique_ptr<StratumRouter> m_router;
+    std::unique_ptr<StratumJobManager> m_jobMgr;
     std::unique_ptr<StratumAuxManager> m_auxMgr;
     ExtranonceMgr m_extranonceMgr;
 
@@ -103,7 +83,6 @@ private:
         GUARDED_BY(m_cs);
     uint32_t m_nextSessionId GUARDED_BY(m_cs) = 1;
 
-    // Stats
     std::atomic<uint64_t> m_totalConnections{0};
     std::atomic<uint64_t> m_totalSharesAccepted{0};
     std::atomic<uint64_t> m_totalSharesRejected{0};
@@ -111,7 +90,6 @@ private:
     std::atomic<uint64_t> m_blocksFound{0};
     int64_t m_startTime = 0;
 
-    // libevent callbacks (static, forwarded to instance methods)
     static void OnAccept(struct evconnlistener *listener, int fd,
                          struct sockaddr *addr, int socklen, void *ctx);
     static void OnRead(struct bufferevent *bev, void *ctx);
@@ -132,20 +110,9 @@ private:
 
     void CreateAndBroadcastJob(bool cleanJobs);
     void PeriodicMaintenance();
-
-    // Router-driven broadcast helpers (called from router callbacks)
-    void BroadcastRawNotify(const std::string &rawLine);
-    void BroadcastDifficultyAll(double difficulty);
-    void HandleProxySubmitResult(int64_t minerId, bool accepted,
-                                 const std::string &error);
-
-    // Pending proxy submit mappings: request_id → session_id
-    std::map<int64_t, uint32_t> m_pendingProxySubmits GUARDED_BY(m_cs);
-
     void EventLoop();
 };
 
-// Global lifecycle functions (called from init.cpp)
 bool InitStratumServer(const StratumConfig &config, Chainstate &chainstate,
                        const CTxMemPool *mempool,
                        const CChainParams &chainParams,
@@ -154,7 +121,6 @@ void StartStratumServer();
 void InterruptStratumServer();
 void StopStratumServer();
 
-/** Get the global stratum server instance (may be nullptr). */
 StratumServer *GetStratumServer();
 
 } // namespace stratum

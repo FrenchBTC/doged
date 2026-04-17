@@ -6,6 +6,7 @@
 
 #include <primitives/auxpow.h>
 #include <test/util/setup_common.h>
+#include <validation.h>
 
 #include <boost/test/unit_test.hpp>
 
