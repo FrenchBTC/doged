@@ -151,6 +151,11 @@ add_subdirectory(test)
 
 add_subdirectory(electrum)
 
+option(BUILD_MINER "Build the doged-miner Scrypt GPU/CPU mining tool" OFF)
+if(BUILD_MINER)
+	add_subdirectory(tools/miner)
+endif()
+
 add_subdirectory(contrib)
 add_subdirectory(doc)
 
