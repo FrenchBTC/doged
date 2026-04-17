@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  litecoind:
+    image: uphold/litecoin-core:0.21
+    container_name: ltc-testnet
+    restart: unless-stopped
+    command:
+      - -testnet
+      - -server=1
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -rpcuser=ltctest
+      - -rpcpassword=ltcpass
+      - -rpcport=19332
+      - -txindex=1
+      - -printtoconsole=1
+      - -debug=rpc
+    ports:
+      - "19335:19335"   # P2P testnet
+      - "19332:19332"   # RPC testnet
+    volumes:
+      - ltc-testnet-data:/home/litecoin/.litecoin
+    mem_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  ltc-testnet-data:
