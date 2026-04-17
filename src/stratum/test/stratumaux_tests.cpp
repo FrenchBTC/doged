@@ -29,7 +29,7 @@ BOOST_AUTO_TEST_CASE(create_aux_work_valid) {
     BOOST_CHECK(result->height > 0);
 }
 
-BOOST_AUTO_TEST_CASE(aux_block_hash_is_sha256d) {
+BOOST_AUTO_TEST_CASE(aux_block_hash_is_sha256d_with_auxpow_bit) {
     CScript scriptPubKey = CScript() << OP_TRUE;
     StratumAuxManager mgr(m_node.chainman->ActiveChainstate(),
                           m_node.mempool.get(),
@@ -38,9 +38,17 @@ BOOST_AUTO_TEST_CASE(aux_block_hash_is_sha256d) {
     auto result = mgr.CreateAuxWork();
     BOOST_REQUIRE(result.has_value());
 
-    // auxBlockHash should equal the block's GetHash() (SHA-256d)
-    BOOST_CHECK(result->auxBlockHash ==
-                result->underlyingJob.block->GetHash());
+    // auxBlockHash is SHA-256d of the header with AuxPoW version bit set,
+    // so it differs from the block's unmodified GetHash().
+    CBlockHeader hdr;
+    hdr.nVersion = VersionWithAuxPow(
+        result->underlyingJob.block->nVersion, true);
+    hdr.hashPrevBlock = result->underlyingJob.block->hashPrevBlock;
+    hdr.hashMerkleRoot = result->underlyingJob.block->hashMerkleRoot;
+    hdr.nTime = result->underlyingJob.block->nTime;
+    hdr.nBits = result->underlyingJob.block->nBits;
+    hdr.nNonce = result->underlyingJob.block->nNonce;
+    BOOST_CHECK(result->auxBlockHash == hdr.GetHash());
 
     // It should NOT equal GetPowHash() (Scrypt)
     BOOST_CHECK(result->auxBlockHash !=
@@ -200,16 +208,18 @@ BOOST_AUTO_TEST_CASE(prune_work) {
                           m_node.mempool.get(),
                           m_node.chainman->GetParams(), scriptPubKey);
 
-    // Create several work items (each will have same block content but
-    // different hashes due to nTime changing)
+    std::vector<uint256> hashes;
     for (int i = 0; i < 5; i++) {
-        mgr.CreateAuxWork();
+        auto w = mgr.CreateAuxWork();
+        BOOST_REQUIRE(w.has_value());
+        hashes.push_back(w->auxBlockHash);
     }
 
     mgr.PruneWork(2);
-    // After pruning to 2, only 2 should remain
-    // (we can't easily check count without exposing it, but GetWork on
-    //  the most recent should still work)
+
+    // Most recent should still be retrievable
+    auto found = mgr.GetWork(hashes.back());
+    BOOST_CHECK(found.has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
