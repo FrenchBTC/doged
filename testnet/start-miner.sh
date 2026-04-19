@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Connect doged-miner to the local doged stratum server.
+# Connect doged-miner (on laptop) to the VPS stratum server.
 #
 # Usage:
-#   ./testnet/start-miner.sh [--gpu N | --cpu N]
+#   ./testnet/start-miner.sh [--gpu N | --cpu N] [VPS_HOST]
 #
-# Defaults to GPU 0. Pass --cpu 4 for CPU-only with 4 threads.
+# Defaults to GPU 0. VPS_HOST defaults to 127.0.0.1 — override via positional
+# arg or the VPS_HOST env var.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MINER="$(pwd)/build/tools/miner/doged-miner"
-STRATUM_URL="stratum+tcp://127.0.0.1:23333"
 WORKER="test.worker"
 PASSWORD="x"
 
@@ -19,21 +19,26 @@ if [ ! -x "$MINER" ]; then
     exit 1
 fi
 
+# Parse args
+VPS_HOST="${VPS_HOST:-127.0.0.1}"
 MODE_ARGS="--gpu 0"
-for arg in "$@"; do
-    case "$arg" in
-        --gpu|--cpu) MODE_ARGS="$arg" ;;
-        [0-9]*) MODE_ARGS="$MODE_ARGS $arg" ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --gpu) MODE_ARGS="--gpu ${2:-0}"; shift 2 || shift ;;
+        --cpu) MODE_ARGS="--cpu ${2:-4}"; shift 2 || shift ;;
+        *)     VPS_HOST="$1"; shift ;;
     esac
 done
 
-echo "============================================================"
-echo "  DOGED-MINER — Scrypt GPU/CPU Stratum Miner"
-echo "============================================================"
-echo "  Server:   $STRATUM_URL"
-echo "  Worker:   $WORKER"
-echo "  Mode:     $MODE_ARGS"
-echo "============================================================"
+STRATUM_URL="stratum+tcp://${VPS_HOST}:23333"
+
+echo "╔══════════════════════════════════════════════════╗"
+echo "║  DOGED-MINER — Laptop → VPS Stratum             ║"
+echo "╠══════════════════════════════════════════════════╣"
+echo "║  Server:   $STRATUM_URL"
+echo "║  Worker:   $WORKER"
+echo "║  Mode:     $MODE_ARGS"
+echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
 exec "$MINER" \

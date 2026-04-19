@@ -1,0 +1,67 @@
+services:
+  litecoind:
+    image: uphold/litecoin-core:0.21
+    container_name: ltc-testnet
+    restart: unless-stopped
+    command:
+      - -testnet
+      - -server=1
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -rpcuser=ltctest
+      - -rpcpassword=ltcpass
+      - -rpcport=19332
+      - -txindex=1
+      - -printtoconsole=1
+    ports:
+      - "19335:19335"   # LTC P2P testnet
+      - "19332:19332"   # LTC RPC (internal use + debug)
+    volumes:
+      - ltc-data:/home/litecoin/.litecoin
+    mem_limit: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  doged:
+    build:
+      context: ..
+      dockerfile: testnet/Dockerfile.doged
+    container_name: doge-testnet
+    restart: unless-stopped
+    depends_on:
+      - litecoind
+    command:
+      - -testnet
+      - -server=1
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -rpcuser=dogetest
+      - -rpcpassword=dogepass
+      - -stratum
+      - -stratumport=23333
+      - -stratumbind=0.0.0.0
+      - -mergemine=LTC:litecoind:19332:ltctest:ltcpass:2:5000
+      - -coinbasetag=/doged-test/
+      - -printtoconsole=1
+      - -debug=stratum
+      - -debug=mergemine
+      - -txindex=1
+    ports:
+      - "44556:44556"   # DOGE P2P testnet
+      - "44555:44555"   # DOGE RPC testnet
+      - "23333:23333"   # Stratum (for laptop miner)
+    volumes:
+      - doge-data:/home/dogeuser/.doged
+    mem_limit: 8g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  ltc-data:
+  doge-data:

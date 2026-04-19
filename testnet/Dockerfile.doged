@@ -1,0 +1,40 @@
+FROM debian:trixie-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build pkg-config \
+    libboost-dev libboost-filesystem-dev libboost-thread-dev \
+    libboost-test-dev \
+    libevent-dev libminiupnpc-dev libdb5.3++-dev libsqlite3-dev \
+    libssl-dev python3 git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /src
+WORKDIR /src/build
+
+RUN cmake -GNinja .. \
+    -DBUILD_BITCOIN_QT=OFF \
+    -DBUILD_BITCOIN_ZMQ=OFF \
+    -DENABLE_NATPMP=OFF \
+    -DBUILD_MINER=OFF \
+    -DUSE_LINKER= \
+    -DUSE_JEMALLOC=OFF \
+    && ninja -j$(nproc) doged doge-cli
+
+# ── runtime image ──
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libevent-2.1-7t64 libevent-pthreads-2.1-7t64 \
+    libminiupnpc18 libdb5.3++t64 libsqlite3-0 \
+    libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/build/src/doged /usr/local/bin/doged
+COPY --from=builder /src/build/src/doge-cli /usr/local/bin/doge-cli
+
+RUN useradd -m -s /bin/bash dogeuser
+USER dogeuser
+
+EXPOSE 44556 44555 23333
+
+ENTRYPOINT ["doged"]

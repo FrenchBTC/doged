@@ -1,0 +1,12 @@
+build/
+.git/
+*.o
+*.a
+*.pyc
+__pycache__/
+contrib/litecoin/src/litecoind
+contrib/litecoin/src/litecoin-cli
+contrib/litecoin/src/litecoin-tx
+contrib/litecoin/src/litecoin-wallet
+testnet/ltc-data/
+testnet/doge-data/

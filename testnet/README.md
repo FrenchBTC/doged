@@ -1,122 +1,121 @@
 # Live Testnet: DOGE + LTC Merged Mining
 
-Mine real DOGE testnet blocks with GPU Scrypt, merge-mined with LTC testnet.
+Mine real DOGE testnet blocks with your laptop GPU, merged with LTC testnet.
+Both nodes run on a VPS. The miner runs on your laptop.
 
 ## Architecture
 
 ```
-┌──────────────────┐    RPC (19332)    ┌──────────────────┐
-│  litecoind       │◄─────────────────│  doged           │
-│  (LTC testnet)   │   poll every 5s  │  (DOGE testnet)  │
-│  docker-compose  │                  │  + stratum:23333 │
-└──────────────────┘                  └────────┬─────────┘
-                                               │ stratum v1
-                                      ┌────────▼─────────┐
-                                      │  doged-miner     │
-                                      │  GPU scrypt      │
-                                      │  RTX 4080        │
-                                      └──────────────────┘
+    ┌─── VPS (any host, ARM64 or x86_64) ────────────────────────┐
+    │                                                             │
+    │  ┌──────────────┐    docker net    ┌──────────────────────┐ │
+    │  │  litecoind   │◄───────────────│  doged               │ │
+    │  │  LTC testnet │  RPC :19332    │  DOGE testnet        │ │
+    │  │  (container) │                │  stratum :23333  ◄───┼─┼── laptop miner
+    │  └──────────────┘                │  RPC :44555          │ │
+    │                                  └──────────────────────┘ │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─── Laptop ─────────────────┐
+    │  doged-miner               │
+    │  GPU scrypt                │
+    │  → stratum+tcp://VPS:23333 │
+    └────────────────────────────┘
 ```
 
-## Step 1 — LTC testnet node (on VPS or local)
+## Quick Start
+
+### 1. Deploy to VPS
 
 ```bash
-cd testnet/
-docker compose -f docker-compose.ltc.yml up -d
-docker logs -f ltc-testnet   # watch IBD progress
+# Required: VPS_HOST. Optional: VPS_USER, VPS_DIR, VPS_PASS (uses ssh keys
+# by default; set VPS_PASS only if your VPS uses password auth + sshpass).
+VPS_HOST=1.2.3.4 ./testnet/deploy-vps.sh
 ```
 
-Check sync progress:
+This rsyncs the source, builds doged inside Docker, and starts both containers.
+First build takes ~10-20 min. Subsequent runs use the Docker layer cache.
+
+### 2. Monitor IBD progress
 
 ```bash
+export VPS_HOST=1.2.3.4
+
+# LTC testnet (small chain, ~30 min)
 curl -sf --user ltctest:ltcpass --data-binary \
   '{"method":"getblockchaininfo","params":[]}' \
-  http://127.0.0.1:19332 | python3 -m json.tool | grep -E 'blocks|progress'
+  http://${VPS_HOST}:19332 | python3 -m json.tool | grep -E 'blocks|progress'
+
+# DOGE testnet (larger chain, ~2-4 hours)
+curl -sf --user dogetest:dogepass --data-binary \
+  '{"method":"getblockchaininfo","params":[]}' \
+  http://${VPS_HOST}:44555 | python3 -m json.tool | grep -E 'blocks|progress'
 ```
 
-LTC testnet IBD takes ~30-60 minutes (chain is small).
-
-If running on a **remote VPS**, open port 19332 and use that IP in step 2.
-
-## Step 2 — DOGE testnet node
+### 3. Validate setup
 
 ```bash
-# From the doged repo root:
-./testnet/start-doged.sh [LTC_RPC_HOST]
-
-# Examples:
-./testnet/start-doged.sh                # LTC on localhost
-./testnet/start-doged.sh 10.0.0.5       # LTC on VPS at 10.0.0.5
+VPS_HOST=1.2.3.4 ./testnet/validate-testnet.sh
 ```
 
-On first run it auto-generates a coinbase address (saved to `~/dogetest/coinbase_address.txt`).
-
-DOGE testnet IBD takes a few hours. Watch for:
-```
-MergeMine: 1 chain(s) — LTC
-Stratum: server started on 0.0.0.0:23333
-```
-
-## Step 3 — Validate the setup
-
-After both nodes are synced, run:
+### 4. Connect your GPU miner (from laptop)
 
 ```bash
-./testnet/validate-testnet.sh [LTC_RPC_HOST]
-```
-
-This checks:
-- Both chains are on `test` network
-- IBD progress > 99%
-- `getmergemineinfo` shows LTC registered
-- `createauxblock` returns chainid=0x62
-- Stratum port accepts connections + responds to subscribe
-
-## Step 4 — Connect the GPU miner
-
-```bash
-./testnet/start-miner.sh --gpu 0      # GPU mining (RTX 4080)
-./testnet/start-miner.sh --cpu 4       # CPU only, 4 threads
-```
-
-Watch doged's console for:
-```
-Stratum: new connection #1 from 127.0.0.1
-Stratum: worker test.worker authorized
-Stratum: share accepted (diff=0.50)
+./testnet/start-miner.sh --gpu 0 1.2.3.4
 ```
 
 ## What to expect
 
-| Event | Where to see it |
-|-------|----------------|
-| Stratum subscribe | doged console: `BCLog::STRATUM` |
-| mining.notify jobs | miner stdout |
-| Share accepted | doged console + miner |
-| DOGE block found | doged: `BLOCK FOUND by worker test.worker at height N` |
-| LTC AuxPoW submit | doged: `LTC block accepted!` |
+| Event | Where |
+|-------|-------|
+| Stratum subscribe + authorize | miner stdout |
+| mining.notify jobs flowing | miner stdout (after both chains finish IBD) |
+| Share accepted | miner stdout |
+| DOGE block found | `docker logs doge-testnet`: `BLOCK FOUND` |
+| LTC AuxPoW accepted | `docker logs doge-testnet`: `LTC block accepted!` |
 
-**Difficulty reality check**: DOGE testnet difficulty is ~0.001 — a single RTX 4080
-doing ~1.5 MH/s Scrypt should find a block every few minutes. LTC testnet difficulty
-is also very low, so merge-mined LTC blocks are likely too.
+DOGE testnet difficulty is ~0.001 — an RTX 4080 at ~1.5 MH/s should find
+a block every few minutes. LTC testnet is also low difficulty, so merge-mined
+LTC blocks should appear too.
 
-## Monitoring
-
-Tail the doged debug log for all stratum/mergemine activity:
+## VPS management
 
 ```bash
-tail -f ~/dogetest/testnet3/debug.log | grep -E 'Stratum|MergeMine|BLOCK'
+# SSH into VPS (use your normal ssh / key-based auth)
+ssh root@${VPS_HOST}
+
+# View logs
+docker logs -f doge-testnet --tail 100
+docker logs -f ltc-testnet --tail 100
+
+# Filter for mining events
+docker logs doge-testnet 2>&1 | grep -E 'Stratum|MergeMine|BLOCK'
+
+# Restart
+cd /opt/doged/testnet
+docker compose -f docker-compose.testnet.yml restart
+
+# Stop
+docker compose -f docker-compose.testnet.yml down
+
+# Rebuild (after code changes)
+docker compose -f docker-compose.testnet.yml build doged
+docker compose -f docker-compose.testnet.yml up -d
 ```
 
-## Cleanup
+## Credentials
 
-```bash
-# Stop miner: Ctrl+C
-# Stop doged:
-build/src/doge-cli -testnet -datadir=$HOME/dogetest stop
-# Stop litecoind:
-cd testnet/ && docker compose -f docker-compose.ltc.yml down
-# Remove data (if needed):
-# rm -rf ~/dogetest ~/ltctest
-# docker volume rm testnet_ltc-testnet-data
-```
+The `dogetest:dogepass` and `ltctest:ltcpass` RPC credentials in
+`docker-compose.testnet.yml` are intended for the isolated Docker network
+only and are not exposed publicly (RPC ports are only bound for local
+debug). If you expose these RPC ports beyond the VPS, change them.
+
+## Ports
+
+| Port | Service | Access |
+|------|---------|--------|
+| 23333 | Stratum v1 | Laptop miner → VPS |
+| 44555 | DOGE RPC | Debug (curl from laptop) |
+| 44556 | DOGE P2P | Testnet peers |
+| 19332 | LTC RPC | Internal (doged → litecoind) + debug |
+| 19335 | LTC P2P | Testnet peers |
