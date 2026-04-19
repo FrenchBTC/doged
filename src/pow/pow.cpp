@@ -14,6 +14,35 @@
 #include <consensus/params.h>
 #include <primitives/blockhash.h>
 
+// Multiplier applied to nPowTargetSpacing for the min-difficulty time gate.
+// Pre-fix: 2x spacing (120s on testnet). Post-fix: 10x spacing (600s on
+// testnet) - makes the spam attack 5x slower per burst.
+static constexpr int64_t LEGACY_MIN_DIFF_SPACING_MULT = 2;
+static constexpr int64_t TESTNET_DAA_FIX_MIN_DIFF_SPACING_MULT = 10;
+
+static int64_t MinDiffSpacingMultiplier(const Consensus::Params &params,
+                                        const CBlockIndex *pindexPrev) {
+    return IsTestnetDaaFixEnabled(params, pindexPrev)
+               ? TESTNET_DAA_FIX_MIN_DIFF_SPACING_MULT
+               : LEGACY_MIN_DIFF_SPACING_MULT;
+}
+
+// Cap the min-difficulty target so it cannot drop below 1/4 of the previous
+// block's difficulty. Returns the compact representation of the capped target,
+// still bounded by powLimit. Only used when the testnet DAA spam fix is active.
+static uint32_t CappedMinDifficulty(const CBlockIndex *pindexPrev,
+                                    const Consensus::Params &params) {
+    arith_uint256 capped;
+    capped.SetCompact(pindexPrev->nBits);
+    // Multiplying the target by 4 == dividing the difficulty by 4.
+    capped *= 4;
+    const arith_uint256 powLimit = UintToArith256(params.powLimit);
+    if (capped > powLimit) {
+        capped = powLimit;
+    }
+    return capped.GetCompact();
+}
+
 // Dogecoin: Normally minimum difficulty blocks can only occur in between
 // retarget blocks. However, once we introduce Digishield every block is
 // a retarget, so we need to handle minimum difficulty on all blocks.
@@ -25,9 +54,11 @@ bool AllowDigishieldMinDifficultyForBlock(
         return false;
     }
 
-    // Allow for a minimum block time if the elapsed time > 2*nTargetSpacing
+    // Allow for a minimum block time if the elapsed time exceeds the
+    // configured spacing multiplier.
+    const int64_t mult = MinDiffSpacingMultiplier(params, pindexLast);
     return (pblock->GetBlockTime() >
-            pindexLast->GetBlockTime() + params.nPowTargetSpacing * 2);
+            pindexLast->GetBlockTime() + params.nPowTargetSpacing * mult);
 }
 
 uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
@@ -50,14 +81,19 @@ uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
     const Consensus::DaaParams daaParams =
         params.DaaParamsAtHeight(nHeight + 1);
 
+    const bool fTestnetDaaFix = IsTestnetDaaFixEnabled(params, pindexPrev);
+
     // Dogecoin: Special rules for minimum difficulty blocks with Digishield
     if (nHeight >= params.digishieldMinDiffHeight &&
         AllowDigishieldMinDifficultyForBlock(pindexPrev, pblock, params,
                                              daaParams)) {
         // Special difficulty rule for testnet:
-        // If the new block's timestamp is more than 2* nTargetSpacing minutes
-        // then allow mining of a min-difficulty block.
-        return nProofOfWorkLimit;
+        // If the new block's timestamp is more than the configured spacing
+        // multiplier (2x pre-fix, 10x post-fix) then allow mining of a
+        // min-difficulty block. Post-fix, the drop is capped at 1/4 of the
+        // previous block's difficulty rather than the absolute powLimit.
+        return fTestnetDaaFix ? CappedMinDifficulty(pindexPrev, params)
+                              : nProofOfWorkLimit;
     }
 
     // Only change once per difficulty adjustment interval
@@ -67,12 +103,16 @@ uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
         daaParams.fDigishieldDifficultyCalculation ? 1 : defaultInterval;
     if ((nHeight + 1) % difficultyAdjustmentInterval != 0) {
         if (daaParams.fPowAllowMinDifficultyBlocks) {
+            const int64_t mult = MinDiffSpacingMultiplier(params, pindexPrev);
             // Special difficulty rule for testnet:
-            // If the new block's timestamp is more than 2* 10 minutes
-            // then allow mining of a min-difficulty block.
+            // If the new block's timestamp is more than the configured
+            // spacing multiplier then allow mining of a min-difficulty
+            // block. Post-fix, the drop is capped at 1/4 of the previous
+            // block's difficulty.
             if (pblock->GetBlockTime() >
-                pindexPrev->GetBlockTime() + params.nPowTargetSpacing * 2) {
-                return nProofOfWorkLimit;
+                pindexPrev->GetBlockTime() + params.nPowTargetSpacing * mult) {
+                return fTestnetDaaFix ? CappedMinDifficulty(pindexPrev, params)
+                                      : nProofOfWorkLimit;
             } else {
                 // Return the last non-special-min-difficulty-rules-block
                 const CBlockIndex *pindex = pindexPrev;
@@ -140,10 +180,21 @@ uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
 // or decrease beyond the permitted limits.
 bool PermittedDifficultyTransition(const Consensus::Params &params,
                                    int64_t height, uint32_t old_nbits,
-                                   uint32_t new_nbits) {
+                                   uint32_t new_nbits,
+                                   int64_t new_block_time) {
     const Consensus::DaaParams daaParams = params.DaaParamsAtHeight(height - 1);
 
-    if (daaParams.fPowAllowMinDifficultyBlocks || params.fPowNoRetargeting) {
+    // Pre-fix testnet/regtest behaviour: any difficulty transition is
+    // permitted because min-difficulty blocks may legitimately drop the
+    // target to powLimit at any time. Once the testnet DAA spam fix is
+    // active (selected by the new block's nTime), do NOT short-circuit so
+    // that spam headers are rejected during initial header presync rather
+    // than wasting bandwidth downloading millions of them.
+    if (params.fPowNoRetargeting) {
+        return true;
+    }
+    if (daaParams.fPowAllowMinDifficultyBlocks &&
+        !IsTestnetDaaFixEnabled(params, new_block_time)) {
         return true;
     }
 
@@ -172,6 +223,17 @@ bool PermittedDifficultyTransition(const Consensus::Params &params,
 
     int64_t smallest_timespan = daaParams.nMinTimespan;
     int64_t largest_timespan = daaParams.nMaxTimespan;
+
+    // When the testnet DAA spam fix is active, a min-difficulty block can
+    // legitimately drop the target by up to 4x (vs DigiShield's normal ~1.5x
+    // bound). Relax the upper bound here to match CappedMinDifficulty so
+    // honest min-diff blocks don't fail the presync transition check.
+    if (IsTestnetDaaFixEnabled(params, new_block_time)) {
+        const int64_t minDiffMaxTimespan = 4 * daaParams.nPowTargetTimespan;
+        if (minDiffMaxTimespan > largest_timespan) {
+            largest_timespan = minDiffMaxTimespan;
+        }
+    }
 
     const arith_uint256 pow_limit = UintToArith256(params.powLimit);
     observed_new_target.SetCompact(new_nbits);

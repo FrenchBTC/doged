@@ -134,6 +134,8 @@ public:
         consensus.augustoActivationTime = 0x7ffffffe;
         consensus.schumpeterActivationTime = 0x7ffffffe;
         consensus.shibusawaActivationTime = 0x7ffffffe;
+        // Testnet-only DAA spam fix: never activates on mainnet.
+        consensus.nTestnetDaaFixActivationTime = 0x7ffffffe;
 
         // Dogecoin: Digishield activation height
         consensus.digishieldHeight = 145000;
@@ -278,6 +280,13 @@ public:
         consensus.augustoActivationTime = 0x7ffffffe;
         consensus.schumpeterActivationTime = 0x7ffffffe;
         consensus.shibusawaActivationTime = 0x7ffffffe;
+        // Testnet DAA spam fix: activates at 2025-04-19 00:00:00 UTC. The
+        // legacy min-difficulty rule (drop to powLimit after a 120s gap)
+        // produced a multi-million-block spam cascade. Setting activation
+        // in the past causes any spam blocks past this MTP to be rejected
+        // as invalid by the new validation rules, automatically reorging
+        // the chain back to the last legitimate tip on restart.
+        consensus.nTestnetDaaFixActivationTime = 1745020800;
 
         // Dogecoin: Digishield activation height
         consensus.digishieldHeight = 145000;
@@ -423,6 +432,8 @@ public:
 
         // Nov. 15, 2025 12:00:00 UTC protocol upgrade
         consensus.shibusawaActivationTime = 1763208000;
+        // Testnet-only DAA spam fix: never activates on regtest.
+        consensus.nTestnetDaaFixActivationTime = 0x7ffffffe;
 
         // Digishield activation height
         consensus.digishieldHeight = 1450;

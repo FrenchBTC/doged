@@ -45,11 +45,14 @@ bool CheckProofOfWork(const BlockHash &hash, uint32_t nBits,
  * possible, so always return true.
  *
  * Always returns true on networks where min difficulty blocks are allowed,
- * such as regtest/testnet.
+ * such as regtest/testnet, EXCEPT when the testnet DAA spam fix is active
+ * (selected by passing the new block's nTime; defaults to 0 which is treated
+ * as pre-activation and preserves the legacy short-circuit behaviour).
  */
 bool PermittedDifficultyTransition(const Consensus::Params &params,
                                    int64_t height, uint32_t old_nbits,
-                                   uint32_t new_nbits);
+                                   uint32_t new_nbits,
+                                   int64_t new_block_time = 0);
 
 /**
  * Convert a header bits difficulty representation to a 256 bits hash target.

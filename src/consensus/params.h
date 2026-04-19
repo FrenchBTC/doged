@@ -75,6 +75,15 @@ struct Params {
     int schumpeterActivationTime;
     /** Unix time used for MTP activation of 15 Nov 2025 12:00:00 UTC upgrade */
     int shibusawaActivationTime;
+    /**
+     * Unix time used for MTP activation of the testnet DAA spam fix.
+     * Disabled (set to 0x7ffffffe) on mainnet and regtest. On testnet, set to
+     * a date in the past so that any spam blocks mined after that date with
+     * the legacy (overly permissive) min-difficulty rule are rejected as
+     * invalid by the new validation rules, automatically reorging the chain
+     * back to the last legitimate tip.
+     */
+    int nTestnetDaaFixActivationTime;
 
     /** Dogecoin "Digishield" activation height */
     int digishieldHeight;

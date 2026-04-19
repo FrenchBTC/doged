@@ -240,7 +240,8 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(
     // adjustment maximum.
     if (!PermittedDifficultyTransition(m_consensus_params, next_height,
                                        m_last_header_received.nBits,
-                                       current.nBits)) {
+                                       current.nBits,
+                                       current.GetBlockTime())) {
         LogPrintf("Initial headers sync aborted with peer=%d: invalid "
                   "difficulty transition at height=%i (presync phase)\n",
                   m_id, next_height);
@@ -297,7 +298,8 @@ bool HeadersSyncState::ValidateAndStoreRedownloadedHeader(
     }
 
     if (!PermittedDifficultyTransition(m_consensus_params, next_height,
-                                       previous_nBits, header.nBits)) {
+                                       previous_nBits, header.nBits,
+                                       header.GetBlockTime())) {
         LogPrint(BCLog::NET,
                  "Initial headers sync aborted with peer=%d: invalid "
                  "difficulty transition at height=%i (redownload phase)\n",

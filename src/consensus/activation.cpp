@@ -133,6 +133,21 @@ bool IsDigishieldEnabled(const Consensus::Params &params, int32_t nHeight) {
     return nHeight >= params.digishieldHeight;
 }
 
+bool IsTestnetDaaFixEnabled(const Consensus::Params &params,
+                            int64_t nMedianTimePast) {
+    return nMedianTimePast >= gArgs.GetIntArg("-testnetdaafixactivationtime",
+                                              params.nTestnetDaaFixActivationTime);
+}
+
+bool IsTestnetDaaFixEnabled(const Consensus::Params &params,
+                            const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return IsTestnetDaaFixEnabled(params, pindexPrev->GetMedianTimePast());
+}
+
 // Command-line argument "-legacyscriptrules" will make the node enforce the old
 // script rules (see SCRIPT_VERIFY_LEGACY_RULES).
 bool IsLegacyScriptRulesEnabled(const Consensus::Params &params) {
