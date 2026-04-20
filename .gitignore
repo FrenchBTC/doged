@@ -111,3 +111,6 @@ web/e.cash/public/rss.xml
 
 # Cargo builds
 target/
+
+# External chain sources (fetched on demand, not committed)
+contrib/litecoin/

@@ -95,6 +95,7 @@ NON_TESTS = {
     "combine_logs.py",
     "create_cache.py",
     "test_runner.py",
+    "mining_mergemine_monitor.py",
 }
 
 EXTRA_PRIVILEGES_TESTS = [

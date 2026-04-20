@@ -1,4 +1,5 @@
 # Copyright (c) 2017 The Bitcoin developers
+# Copyright (c) 2025-2026 Tobias Ruck and Alexandre Guillioud
 
 project(doged)
 
@@ -342,6 +343,7 @@ add_subdirectory(crypto)
 add_subdirectory(leveldb)
 add_subdirectory(secp256k1)
 add_subdirectory(univalue)
+add_subdirectory(api)
 
 # Find the git root, and returns the full path to the .git/logs/HEAD file if
 # it exists.
@@ -691,6 +693,17 @@ add_library(server
 	pow/auxpow.cpp
 	pow/pow.cpp
 	rest.cpp
+	stratum/mergemine.cpp
+	stratum/stratum.cpp
+	stratum/stratumaux.cpp
+	stratum/stratumconfig.cpp
+	stratum/stratumjob.cpp
+	stratum/stratumprotocol.cpp
+	stratum/stratumproxy.cpp
+	stratum/stratumrouter.cpp
+	stratum/stratumstats.cpp
+	stratum/stratumsubmit.cpp
+	stratum/stratumworker.cpp
 	rpc/abc.cpp
 	rpc/avalanche.cpp
 	rpc/blockchain.cpp
@@ -723,6 +736,7 @@ target_link_libraries(server
 	bitcoinconsensus
 	leveldb
 	memenv
+	api
 )
 
 link_event(server event)
@@ -761,6 +775,7 @@ endif()
 add_subdirectory(test)
 add_subdirectory(avalanche/test)
 add_subdirectory(pow/test)
+add_subdirectory(stratum/test)
 
 # Benchmark suite.
 add_subdirectory(bench)

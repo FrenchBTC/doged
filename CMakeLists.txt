@@ -1,4 +1,5 @@
 # Copyright (c) 2017 The Bitcoin developers
+# Copyright (c) 2025-2026 Tobias Ruck and Alexandre Guillioud
 
 cmake_minimum_required(VERSION 3.18)
 
@@ -152,5 +153,10 @@ add_subdirectory(electrum)
 
 add_subdirectory(contrib)
 add_subdirectory(doc)
+
+option(BUILD_MINER "Build the doged-miner Scrypt GPU/CPU mining tool" ON)
+if(BUILD_MINER)
+	add_subdirectory(tools/miner)
+endif()
 
 include(PackageOptions.cmake)
