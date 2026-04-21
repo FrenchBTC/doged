@@ -99,6 +99,17 @@ private:
     ExternalChainConfig m_cfg;
     mutable Mutex m_mutex;
     ExternalAuxWork m_currentWork GUARDED_BY(m_mutex);
+
+    // Failure-spam dampening. Routine refresh failures (e.g. LTC node down,
+    // RPC unreachable) used to log every poll interval (~5s), drowning the
+    // log. We now log the first failure loudly, suppress subsequent identical
+    // failures (debug category only), re-emit a loud line every
+    // SPAM_REPEAT_EVERY failures so operators still notice prolonged outages,
+    // and emit a loud "recovered" line on the first success after a failure
+    // streak.
+    static constexpr int SPAM_REPEAT_EVERY = 60;
+    int m_failStreak{0};
+    std::string m_lastFailMsg;
 };
 
 /**

@@ -194,9 +194,26 @@ bool ExternalChainClient::RefreshWork(const std::string &address) {
         }
 
         if (!result.isObject()) {
-            LogPrintf("MergeMine: %s returned non-object for work\n",
-                      m_cfg.name);
+            const std::string msg = "non-object response";
+            if (m_failStreak == 0 || m_lastFailMsg != msg ||
+                m_failStreak % SPAM_REPEAT_EVERY == 0) {
+                LogPrintf("MergeMine: %s refresh failed — %s\n",
+                          m_cfg.name, msg);
+            } else {
+                LogPrint(BCLog::MERGEMINE,
+                         "MergeMine: %s refresh failed (streak=%d) — %s\n",
+                         m_cfg.name, m_failStreak, msg);
+            }
+            m_failStreak++;
+            m_lastFailMsg = msg;
             return false;
+        }
+
+        if (m_failStreak > 0) {
+            LogPrintf("MergeMine: %s recovered after %d consecutive "
+                      "failures\n", m_cfg.name, m_failStreak);
+            m_failStreak = 0;
+            m_lastFailMsg.clear();
         }
 
         LOCK(m_mutex);
@@ -235,8 +252,21 @@ bool ExternalChainClient::RefreshWork(const std::string &address) {
 
         return true;
     } catch (const std::exception &e) {
-        LogPrintf("MergeMine: %s refresh failed — %s\n", m_cfg.name,
-                  e.what());
+        const std::string msg = e.what();
+        if (m_failStreak == 0 || m_lastFailMsg != msg ||
+            m_failStreak % SPAM_REPEAT_EVERY == 0) {
+            LogPrintf("MergeMine: %s refresh failed — %s%s\n", m_cfg.name,
+                      msg,
+                      m_failStreak > 0
+                          ? strprintf(" (streak=%d)", m_failStreak).c_str()
+                          : "");
+        } else {
+            LogPrint(BCLog::MERGEMINE,
+                     "MergeMine: %s refresh failed (streak=%d) — %s\n",
+                     m_cfg.name, m_failStreak, msg);
+        }
+        m_failStreak++;
+        m_lastFailMsg = msg;
         return false;
     }
 }
