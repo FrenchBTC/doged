@@ -1138,6 +1138,15 @@ void SetupServerArgs(NodeContext &node) {
                              DEFAULT_CHECKPOINTS_ENABLED),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::DEBUG_TEST);
+    argsman.AddArg(
+        "-recoverycheckpoint=<height>:<hash>",
+        "Add an extra checkpoint at the given height/hash. May be specified "
+        "multiple times. Testnet/regtest only (silently ignored on mainnet). "
+        "Used to pin the last legitimate pre-spam tip after the testnet DAA "
+        "cascade so the spam fork is rejected outright and unreachable via "
+        "reorg.",
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-deprecatedrpc=<method>",
                    "Allows deprecated RPC method(s) to be used",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,

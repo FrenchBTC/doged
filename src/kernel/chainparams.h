@@ -160,6 +160,12 @@ public:
     struct ChainOptions {
         bool ecash{true};
         bool fastprune{false};
+        // Operator-supplied extra checkpoints (testnet/regtest only).
+        // Parsed from -recoverycheckpoint=HEIGHT:HASH and merged into
+        // checkpointData.mapCheckpoints at construction. Used to pin the
+        // last legitimate pre-spam tip after the testnet DAA cascade so
+        // nodes cannot follow the poisoned fork.
+        std::vector<std::pair<int, BlockHash>> extraCheckpoints{};
     };
 
     static std::unique_ptr<const CChainParams>

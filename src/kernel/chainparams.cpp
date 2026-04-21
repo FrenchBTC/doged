@@ -342,6 +342,13 @@ public:
 
         checkpointData = CheckpointData(ChainType::TESTNET);
 
+        // Operator-supplied recovery checkpoints (testnet only). These pin
+        // the last legitimate pre-spam tip so the spam fork is rejected
+        // outright and unreachable via reorg. See -recoverycheckpoint.
+        for (const auto &cp : opts.extraCheckpoints) {
+            checkpointData.mapCheckpoints[cp.first] = cp.second;
+        }
+
         m_assumeutxo_data = {
             // TODO to be specified in a future patch.
         };
@@ -476,6 +483,12 @@ public:
         m_is_mockable_chain = true;
 
         checkpointData = CheckpointData(ChainType::REGTEST);
+
+        // Operator-supplied recovery checkpoints (regtest convenience for
+        // exercising the same code path as testnet). See -recoverycheckpoint.
+        for (const auto &cp : opts.extraCheckpoints) {
+            checkpointData.mapCheckpoints[cp.first] = cp.second;
+        }
 
         m_assumeutxo_data = {
             {.height = 110,
