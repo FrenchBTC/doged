@@ -1,0 +1,125 @@
+# Two-node testnet harness for converging on the new post-DAA-fix fork.
+#
+# Both nodes:
+#   * run the patched doged binary (testnet DAA spam fix active)
+#   * are isolated from the public testnet seed nodes (-dnsseed=0,
+#     -fixedseeds=0) so they cannot pull the spam fork accidentally
+#   * peer ONLY with each other on the private docker bridge network
+#     "dogenet" (-connect=...)
+#   * load the same -recoverycheckpoint pin (uncomment + set once you
+#     have identified the last legitimate pre-spam HEIGHT:HASH)
+#
+# doged-a additionally exposes the stratum port for an external GPU
+# miner (run testnet/start-miner.sh against the host).
+#
+# Usage:
+#   docker compose -f testnet/docker-compose.fork.yml up -d --build
+#   docker compose -f testnet/docker-compose.fork.yml logs -f doged-a doged-b
+#   ./testnet/validate-fork.sh
+#
+# Stop / wipe:
+#   docker compose -f testnet/docker-compose.fork.yml down -v
+
+services:
+  doged-a:
+    build:
+      context: ..
+      dockerfile: testnet/Dockerfile.doged
+    image: doged-fork:latest
+    container_name: doged-fork-a
+    restart: unless-stopped
+    networks:
+      dogenet:
+        aliases: [doged-a]
+    command:
+      - -testnet
+      - -server=1
+      - -listen=1
+      - -bind=0.0.0.0
+      - -port=44556
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -rpcport=44555
+      - -rpcuser=dogetest
+      - -rpcpassword=dogepass
+      # Network isolation: only peer with doged-b. Public testnet is full of
+      # the spam fork; the new validation rejects it but every disconnect
+      # wastes presync state. Closed-loop is faster.
+      - -dnsseed=0
+      - -fixedseeds=0
+      - -connect=doged-b:44556
+      - -addnode=doged-b:44556
+      # Recovery checkpoint pin (UNCOMMENT once HEIGHT:HASH is known —
+      # MUST be identical on both nodes).
+      # - -recoverycheckpoint=<height>:<hash>
+      # Stratum / miner side (only doged-a serves miners externally).
+      - -stratum
+      - -stratumport=23333
+      - -stratumbind=0.0.0.0
+      - -coinbasetag=/doged-fork/
+      - -txindex=1
+      - -printtoconsole=1
+      - -debug=mergemine
+    ports:
+      - "44555:44555"   # doged-a RPC (debug)
+      - "44556:44556"   # doged-a P2P (optional external)
+      - "23333:23333"   # Stratum (laptop GPU miner)
+    volumes:
+      - doged-a-data:/home/dogeuser/.doged
+    mem_limit: 8g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  doged-b:
+    build:
+      context: ..
+      dockerfile: testnet/Dockerfile.doged
+    image: doged-fork:latest
+    container_name: doged-fork-b
+    restart: unless-stopped
+    networks:
+      dogenet:
+        aliases: [doged-b]
+    command:
+      - -testnet
+      - -server=1
+      - -listen=1
+      - -bind=0.0.0.0
+      - -port=44556
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -rpcport=44555
+      - -rpcuser=dogetest
+      - -rpcpassword=dogepass
+      - -dnsseed=0
+      - -fixedseeds=0
+      - -connect=doged-a:44556
+      - -addnode=doged-a:44556
+      # Same pin as doged-a.
+      # - -recoverycheckpoint=<height>:<hash>
+      - -txindex=1
+      - -printtoconsole=1
+    ports:
+      # Different host ports so both RPCs are reachable for debugging /
+      # validate-fork.sh; intra-cluster comms still go over container
+      # ports (44556) on the dogenet bridge.
+      - "44557:44555"   # doged-b RPC (debug)
+    volumes:
+      - doged-b-data:/home/dogeuser/.doged
+    mem_limit: 8g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+networks:
+  dogenet:
+    driver: bridge
+
+volumes:
+  doged-a-data:
+  doged-b-data:
