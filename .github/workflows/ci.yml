@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config ccache \
+            libboost-dev libboost-filesystem-dev libboost-thread-dev \
+            libboost-test-dev \
+            libevent-dev libminiupnpc-dev libsqlite3-dev \
+            libssl-dev python3 git ca-certificates \
+            libdb5.3++-dev || sudo apt-get install -y libdb-dev libdb++-dev
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-master-
+            ccache-${{ runner.os }}-
+
+      - name: Configure
+        run: |
+          mkdir -p build
+          cd build
+          cmake -GNinja .. \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DBUILD_BITCOIN_QT=OFF \
+            -DBUILD_BITCOIN_ZMQ=OFF \
+            -DENABLE_NATPMP=OFF \
+            -DBUILD_MINER=OFF \
+            -DUSE_LINKER= \
+            -DUSE_JEMALLOC=OFF
+
+      - name: Build doged + test binaries
+        working-directory: build
+        run: ninja -j$(nproc) doged doge-cli test_bitcoin test-pow
+
+      - name: Run unit tests (test_bitcoin)
+        working-directory: build
+        run: ./src/test/test_bitcoin --logger=HRF
+
+      - name: Run pow tests (DAA + spam-fix regressions)
+        working-directory: build
+        run: ./src/pow/test/test-pow --logger=HRF
+
+      - name: Print ccache stats
+        if: always()
+        run: ccache -s || true

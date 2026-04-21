@@ -1,0 +1,165 @@
+name: docker
+
+# Build the doged container image and publish to GitHub Container
+# Registry (ghcr.io). Triggers:
+#   - push to master / main / fix/testnet-daa-spam → publishes
+#   - push of a v* tag                              → publishes (release)
+#   - pull_request                                  → builds only, no push
+#   - workflow_dispatch                             → manual run
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - fix/testnet-daa-spam
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push image to ghcr.io'
+        required: false
+        default: 'true'
+      platforms:
+        description: 'Platforms (comma-separated, e.g. linux/amd64,linux/arm64)'
+        required: false
+        default: 'linux/amd64,linux/arm64'
+
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # ${{ github.repository }} is "FrenchBTC/doged"; GHCR requires lowercase
+  # which it does automatically on push, but we also use this in shell
+  # interpolation in the manifest job so we lowercase it explicitly.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build & push (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_tag: amd64
+          - platform: linux/arm64
+            platform_tag: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.platform }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+            suffix=-${{ matrix.platform_tag }},onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and (maybe) push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: testnet/Dockerfile.doged
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.platform_tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform_tag }}
+          provenance: false
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute manifest tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Create + push multi-arch manifests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # docker/metadata-action outputs already-lowercased image refs of
+          # the form  <registry>/<repo>:<tag>. For each one we derive the
+          # matching per-arch tags published by build-and-push (suffix
+          # -amd64 / -arm64) and assemble the manifest list.
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            amd64_tag="${ref}-amd64"
+            arm64_tag="${ref}-arm64"
+            echo "::group::manifest ${ref}"
+            echo "  amd64 -> ${amd64_tag}"
+            echo "  arm64 -> ${arm64_tag}"
+            docker buildx imagetools create \
+              --tag "${ref}" \
+              "${amd64_tag}" \
+              "${arm64_tag}"
+            docker buildx imagetools inspect "${ref}" || true
+            echo "::endgroup::"
+          done <<< "${TAGS}"
