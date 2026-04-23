@@ -133,19 +133,24 @@ bool IsDigishieldEnabled(const Consensus::Params &params, int32_t nHeight) {
     return nHeight >= params.digishieldHeight;
 }
 
-bool IsTestnetDaaFixEnabled(const Consensus::Params &params,
-                            int64_t nMedianTimePast) {
-    return nMedianTimePast >= gArgs.GetIntArg("-testnetdaafixactivationtime",
-                                              params.nTestnetDaaFixActivationTime);
+bool IsTestnetDaaFixEnabled(const Consensus::Params &params, int64_t nHeight) {
+    // Activation gate is the height of the block being validated/mined
+    // (NOT pindexPrev->nHeight). Operator override is intended for testing
+    // alternate cut-off heights on private testnets.
+    return nHeight >= gArgs.GetIntArg("-testnetdaafixactivationheight",
+                                      params.nTestnetDaaFixActivationHeight);
 }
 
 bool IsTestnetDaaFixEnabled(const Consensus::Params &params,
                             const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
+        // Genesis: never activates (activation height is always > 0).
         return false;
     }
 
-    return IsTestnetDaaFixEnabled(params, pindexPrev->GetMedianTimePast());
+    // The "new" block being built on top of pindexPrev is at pindexPrev + 1.
+    return IsTestnetDaaFixEnabled(params,
+                                  static_cast<int64_t>(pindexPrev->nHeight) + 1);
 }
 
 // Command-line argument "-legacyscriptrules" will make the node enforce the old

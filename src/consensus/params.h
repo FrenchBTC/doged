@@ -76,14 +76,20 @@ struct Params {
     /** Unix time used for MTP activation of 15 Nov 2025 12:00:00 UTC upgrade */
     int shibusawaActivationTime;
     /**
-     * Unix time used for MTP activation of the testnet DAA spam fix.
-     * Disabled (set to 0x7ffffffe) on mainnet and regtest. On testnet, set to
-     * a date in the past so that any spam blocks mined after that date with
-     * the legacy (overly permissive) min-difficulty rule are rejected as
-     * invalid by the new validation rules, automatically reorging the chain
-     * back to the last legitimate tip.
+     * Block height at which the testnet DAA spam fix activates. Disabled
+     * (set to 0x7ffffffe) on mainnet and regtest. On testnet, set to the
+     * height of the last commonly-agreed legitimate header so that:
+     *   - blocks at height >= nTestnetDaaFixActivationHeight MUST obey the
+     *     new, stricter min-difficulty rule (10x spacing time gate, drop
+     *     capped at prev_target * 4);
+     *   - the spam fork (which mined uncapped powLimit blocks past this
+     *     height) becomes invalid under the new rule and is rejected during
+     *     header presync, automatically converging the chain on the honest
+     *     branch.
+     * Height-based (rather than MTP-based) so the cut-off is deterministic
+     * and easy to reason about for operators / wallets / explorers.
      */
-    int nTestnetDaaFixActivationTime;
+    int nTestnetDaaFixActivationHeight;
 
     /** Dogecoin "Digishield" activation height */
     int digishieldHeight;

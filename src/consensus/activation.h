@@ -62,12 +62,14 @@ bool IsDigishieldEnabled(const Consensus::Params &params, int32_t nHeight);
 
 /**
  * Check if the testnet DAA spam fix is active. Always false on mainnet/
- * regtest (activation time is set to 0x7ffffffe). On testnet, becomes true
- * once the previous block's median-time-past crosses the configured
- * activation timestamp.
+ * regtest (activation height is set to 0x7ffffffe). On testnet, becomes
+ * true once the new block's height >= nTestnetDaaFixActivationHeight (i.e.
+ * the block being mined / validated is at or past the fork height).
+ *
+ * Operators may override the activation height at startup via
+ * -testnetdaafixactivationheight=<H>.
  */
-bool IsTestnetDaaFixEnabled(const Consensus::Params &params,
-                            int64_t nMedianTimePast);
+bool IsTestnetDaaFixEnabled(const Consensus::Params &params, int64_t nHeight);
 bool IsTestnetDaaFixEnabled(const Consensus::Params &params,
                             const CBlockIndex *pindexPrev);
 

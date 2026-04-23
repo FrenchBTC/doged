@@ -46,8 +46,10 @@ bool CheckProofOfWork(const BlockHash &hash, uint32_t nBits,
  *
  * Always returns true on networks where min difficulty blocks are allowed,
  * such as regtest/testnet, EXCEPT when the testnet DAA spam fix is active
- * (selected by passing the new block's nTime; defaults to 0 which is treated
- * as pre-activation and preserves the legacy short-circuit behaviour).
+ * (gated by the new block's `height` against
+ * params.nTestnetDaaFixActivationHeight). The `new_block_time` argument is
+ * retained for ABI compatibility but is no longer consulted for activation
+ * (kept because some callers still pass header.GetBlockTime()).
  */
 bool PermittedDifficultyTransition(const Consensus::Params &params,
                                    int64_t height, uint32_t old_nbits,

@@ -187,14 +187,17 @@ bool PermittedDifficultyTransition(const Consensus::Params &params,
     // Pre-fix testnet/regtest behaviour: any difficulty transition is
     // permitted because min-difficulty blocks may legitimately drop the
     // target to powLimit at any time. Once the testnet DAA spam fix is
-    // active (selected by the new block's nTime), do NOT short-circuit so
-    // that spam headers are rejected during initial header presync rather
-    // than wasting bandwidth downloading millions of them.
+    // active (selected purely by the new block's height), do NOT
+    // short-circuit so that spam headers are rejected during initial
+    // header presync rather than wasting bandwidth downloading millions
+    // of them. new_block_time is retained in the signature for backwards
+    // compatibility but is no longer consulted for activation.
+    (void)new_block_time;
     if (params.fPowNoRetargeting) {
         return true;
     }
     if (daaParams.fPowAllowMinDifficultyBlocks &&
-        !IsTestnetDaaFixEnabled(params, new_block_time)) {
+        !IsTestnetDaaFixEnabled(params, height)) {
         return true;
     }
 
@@ -228,7 +231,7 @@ bool PermittedDifficultyTransition(const Consensus::Params &params,
     // legitimately drop the target by up to 4x (vs DigiShield's normal ~1.5x
     // bound). Relax the upper bound here to match CappedMinDifficulty so
     // honest min-diff blocks don't fail the presync transition check.
-    if (IsTestnetDaaFixEnabled(params, new_block_time)) {
+    if (IsTestnetDaaFixEnabled(params, height)) {
         const int64_t minDiffMaxTimespan = 4 * daaParams.nPowTargetTimespan;
         if (minDiffMaxTimespan > largest_timespan) {
             largest_timespan = minDiffMaxTimespan;

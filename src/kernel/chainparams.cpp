@@ -135,7 +135,7 @@ public:
         consensus.schumpeterActivationTime = 0x7ffffffe;
         consensus.shibusawaActivationTime = 0x7ffffffe;
         // Testnet-only DAA spam fix: never activates on mainnet.
-        consensus.nTestnetDaaFixActivationTime = 0x7ffffffe;
+        consensus.nTestnetDaaFixActivationHeight = 0x7ffffffe;
 
         // Dogecoin: Digishield activation height
         consensus.digishieldHeight = 145000;
@@ -280,13 +280,19 @@ public:
         consensus.augustoActivationTime = 0x7ffffffe;
         consensus.schumpeterActivationTime = 0x7ffffffe;
         consensus.shibusawaActivationTime = 0x7ffffffe;
-        // Testnet DAA spam fix: activates at 2025-04-19 00:00:00 UTC. The
-        // legacy min-difficulty rule (drop to powLimit after a 120s gap)
-        // produced a multi-million-block spam cascade. Setting activation
-        // in the past causes any spam blocks past this MTP to be rejected
-        // as invalid by the new validation rules, automatically reorging
-        // the chain back to the last legitimate tip on restart.
-        consensus.nTestnetDaaFixActivationTime = 1745020800;
+        // Testnet DAA spam fix: activates at height 2240000 — the last
+        // commonly-agreed legitimate header observed during presync of the
+        // patched node against the public testnet seeds. The legacy
+        // min-difficulty rule (drop to powLimit after a 120s gap) produced
+        // a multi-million-block spam cascade above this height. With the
+        // fix gated by height (rather than MTP), the cut-off is
+        // deterministic: any header at h >= 2240000 that violates the new
+        // capped/throttled min-difficulty rule is rejected during header
+        // presync, the spam fork dies, and the chain converges on the
+        // honest branch automatically. Operators wishing to test or push
+        // the cut-off elsewhere may override this at startup with
+        // -testnetdaafixactivationheight=<H>.
+        consensus.nTestnetDaaFixActivationHeight = 2240000;
 
         // Dogecoin: Digishield activation height
         consensus.digishieldHeight = 145000;
@@ -440,7 +446,7 @@ public:
         // Nov. 15, 2025 12:00:00 UTC protocol upgrade
         consensus.shibusawaActivationTime = 1763208000;
         // Testnet-only DAA spam fix: never activates on regtest.
-        consensus.nTestnetDaaFixActivationTime = 0x7ffffffe;
+        consensus.nTestnetDaaFixActivationHeight = 0x7ffffffe;
 
         // Digishield activation height
         consensus.digishieldHeight = 1450;

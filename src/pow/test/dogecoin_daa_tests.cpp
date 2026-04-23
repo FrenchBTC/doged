@@ -179,24 +179,31 @@ MakeMockBlocksWithTime(size_t length, int32_t startHeight, int64_t blockTime,
 //   1. Increases the gate to 10*spacing (600s).
 //   2. Caps the drop at prev_target * 4 (i.e. 1/4 of previous difficulty),
 //      not all the way to powLimit.
-// Activation is MTP-based at 2025-04-19 00:00:00 UTC = 1745020800.
+// Activation is HEIGHT-based at block 2,240,000 (the last commonly-agreed
+// honest header observed during presync). Pre-fork heights retain legacy
+// behaviour; post-fork heights enforce the capped/throttled rule.
 
-constexpr int64_t TESTNET_DAA_FIX_TIME = 1745020800;
-// Past height where DigiShield AND digishieldMinDiffHeight (157500) are both
-// active so the DigiShield min-difficulty path is exercised.
-constexpr int32_t POST_DIGISHIELD_HEIGHT = 200000;
+constexpr int32_t TESTNET_DAA_FIX_HEIGHT = 2240000;
+// Pre-activation height: post-Digishield (digishieldMinDiffHeight = 157500)
+// but well below the fork height, so legacy min-difficulty path applies.
+constexpr int32_t PRE_ACTIVATION_HEIGHT = 200000;
+// Post-activation height: comfortably past the fork, so the new
+// capped/throttled min-difficulty rule applies.
+constexpr int32_t POST_ACTIVATION_HEIGHT = TESTNET_DAA_FIX_HEIGHT + 100;
 // A representative non-trivial nBits well above powLimit. Compact 0x1d00ffff
 // is the standard Bitcoin-difficulty "1" target.
 constexpr uint32_t SAMPLE_NBITS = 0x1d00ffff;
+// Arbitrary timestamp - block time no longer affects activation, only the
+// inter-block spacing check.
+constexpr int64_t SAMPLE_BLOCK_TIME = 1745020800;
 
 BOOST_AUTO_TEST_CASE(testnet_daa_fix_legacy_rule_unchanged_pre_activation) {
-    // Pre-activation: 121-second gap should still trigger min-difficulty
-    // and return powLimit (legacy behaviour preserved).
+    // Pre-activation height: 121-second gap should still trigger
+    // min-difficulty and return powLimit (legacy behaviour preserved).
     DummyConfig config(ChainTypeToString(ChainType::TESTNET));
-    const int64_t preActivationTime = TESTNET_DAA_FIX_TIME - (365 * 24 * 60 * 60);
 
     std::vector<CBlockIndex> blocks = MakeMockBlocksWithTime(
-        12, POST_DIGISHIELD_HEIGHT - 11, preActivationTime, SAMPLE_NBITS);
+        12, PRE_ACTIVATION_HEIGHT - 11, SAMPLE_BLOCK_TIME, SAMPLE_NBITS);
     CBlockIndex *pindexLast = &blocks.back();
 
     CBlockHeader header;
@@ -215,10 +222,9 @@ BOOST_AUTO_TEST_CASE(testnet_daa_fix_post_activation_short_gap_holds_diff) {
     // min-difficulty must NOT trigger. DigiShield then computes a regular
     // retarget for the (very) short timespan.
     DummyConfig config(ChainTypeToString(ChainType::TESTNET));
-    const int64_t postActivationTime = TESTNET_DAA_FIX_TIME + 1000;
 
     std::vector<CBlockIndex> blocks = MakeMockBlocksWithTime(
-        12, POST_DIGISHIELD_HEIGHT - 11, postActivationTime, SAMPLE_NBITS);
+        12, POST_ACTIVATION_HEIGHT - 11, SAMPLE_BLOCK_TIME, SAMPLE_NBITS);
     CBlockIndex *pindexLast = &blocks.back();
 
     CBlockHeader header;
@@ -239,10 +245,9 @@ BOOST_AUTO_TEST_CASE(testnet_daa_fix_post_activation_long_gap_capped) {
     // min-difficulty triggers, but the drop must be CAPPED at prev_target*4
     // rather than going all the way to powLimit.
     DummyConfig config(ChainTypeToString(ChainType::TESTNET));
-    const int64_t postActivationTime = TESTNET_DAA_FIX_TIME + 1000;
 
     std::vector<CBlockIndex> blocks = MakeMockBlocksWithTime(
-        12, POST_DIGISHIELD_HEIGHT - 11, postActivationTime, SAMPLE_NBITS);
+        12, POST_ACTIVATION_HEIGHT - 11, SAMPLE_BLOCK_TIME, SAMPLE_NBITS);
     CBlockIndex *pindexLast = &blocks.back();
 
     CBlockHeader header;
@@ -265,36 +270,44 @@ BOOST_AUTO_TEST_CASE(testnet_daa_fix_post_activation_long_gap_capped) {
     BOOST_CHECK(result != powLimit);
 
     // PermittedDifficultyTransition must accept this legitimate drop after
-    // the fix: passing the new block's time activates the relaxed bound.
+    // the fix: gating is now purely height-based.
     BOOST_CHECK(PermittedDifficultyTransition(
         config.GetChainParams().GetConsensus(), pindexLast->nHeight + 1,
         pindexLast->nBits, expected_nbits, header.nTime));
 }
 
 BOOST_AUTO_TEST_CASE(testnet_daa_fix_rejects_uncapped_min_diff) {
-    // Post-activation: a header claiming nBits = powLimit (the spammer's
-    // forged claim) must be rejected by PermittedDifficultyTransition.
+    // Post-activation height: a header claiming nBits = powLimit (the
+    // spammer's forged claim) must be rejected by
+    // PermittedDifficultyTransition.
     DummyConfig config(ChainTypeToString(ChainType::TESTNET));
-    const int64_t postActivationTime = TESTNET_DAA_FIX_TIME + 1000;
 
     const uint32_t powLimit =
         UintToArith256(config.GetChainParams().GetConsensus().powLimit)
             .GetCompact();
 
+    // At a post-activation height, the bogus drop to powLimit is rejected.
     BOOST_CHECK(!PermittedDifficultyTransition(
         config.GetChainParams().GetConsensus(),
-        /*height=*/POST_DIGISHIELD_HEIGHT + 1,
+        /*height=*/POST_ACTIVATION_HEIGHT,
         /*old_nbits=*/SAMPLE_NBITS,
         /*new_nbits=*/powLimit,
-        /*new_block_time=*/postActivationTime));
+        /*new_block_time=*/SAMPLE_BLOCK_TIME));
 
-    // And the same transition with new_block_time=0 (legacy / pre-fix
-    // semantics) must still be allowed - preserves backward compatibility
-    // for existing call sites that don't pass a time.
+    // The new_block_time argument is now ignored - the same call with
+    // new_block_time=0 must yield the same rejection (proves activation is
+    // height-based, not time-based).
+    BOOST_CHECK(!PermittedDifficultyTransition(
+        config.GetChainParams().GetConsensus(),
+        /*height=*/POST_ACTIVATION_HEIGHT, SAMPLE_NBITS, powLimit,
+        /*new_block_time=*/0));
+
+    // At a pre-activation height, the same drop is allowed (legacy
+    // behaviour preserved for the lower portion of the chain).
     BOOST_CHECK(PermittedDifficultyTransition(
         config.GetChainParams().GetConsensus(),
-        POST_DIGISHIELD_HEIGHT + 1, SAMPLE_NBITS, powLimit,
-        /*new_block_time=*/0));
+        /*height=*/PRE_ACTIVATION_HEIGHT, SAMPLE_NBITS, powLimit,
+        /*new_block_time=*/SAMPLE_BLOCK_TIME));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
