@@ -333,14 +333,26 @@ void StratumServer::HandleAuthorize(ClientSession &session,
 
     SendDifficulty(session.sessionId, m_config.defaultDifficulty);
 
-    if (m_jobMgr && m_jobMgr->JobCount() > 0) {
-        auto jobResult = m_jobMgr->CreateJob(false);
+    // Hand the freshly-authorised worker a job immediately. Without this,
+    // a worker connecting to a node that hasn't yet experienced an
+    // UpdatedBlockTip notification (e.g. a brand-new isolated cluster
+    // where the only tip is genesis) would sit idle forever waiting on a
+    // mining.notify that never comes. CreateJob templates against the
+    // current chain tip, so it works at any height >= 0.
+    if (m_jobMgr) {
+        auto jobResult = m_jobMgr->CreateJob(/*cleanJobs=*/false);
         if (jobResult) {
             UniValue notifyParams =
                 m_jobMgr->FormatNotifyParams(*jobResult);
             std::string data =
                 SerializeNotify("mining.notify", notifyParams);
             SendToClient(session, data);
+        } else {
+            LogPrint(BCLog::STRATUM,
+                     "Stratum: failed to create initial job for worker #%u: "
+                     "%s\n",
+                     session.sessionId,
+                     util::ErrorString(jobResult).original);
         }
     }
 }
