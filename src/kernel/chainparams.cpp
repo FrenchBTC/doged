@@ -292,7 +292,12 @@ public:
         // honest branch automatically. Operators wishing to test or push
         // the cut-off elsewhere may override this at startup with
         // -testnetdaafixactivationheight=<H>.
-        consensus.nTestnetDaaFixActivationHeight = 2240000;
+        // TEMP: lowered to 100000 for fast end-to-end test of the fork +
+        // mining path; honest historical headers past this height that used
+        // the legacy uncapped min-diff drop will also be rejected. Restore
+        // 2240000 (or wherever the spam cut-off actually is) before any
+        // public release.
+        consensus.nTestnetDaaFixActivationHeight = 100000;
 
         // Dogecoin: Digishield activation height
         consensus.digishieldHeight = 145000;
