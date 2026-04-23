@@ -10,6 +10,7 @@
 #include <consensus/merkle.h>
 #include <script/script.h>
 #include <hash.h>
+#include <logging.h>
 #include <node/miner.h>
 #include <pow/pow.h>
 #include <primitives/auxpow.h>
@@ -18,7 +19,65 @@
 #include <util/translation.h>
 #include <validation.h>
 
+#include <set>
+
 namespace stratum {
+
+namespace {
+/**
+ * Serialize the standard FABE6D6D + root_BE + treeSize_LE + nonce_LE payload
+ * that goes into the parent coinbase scriptSig.
+ */
+void SerializeCommitmentPayload(std::vector<uint8_t> &out,
+                                const uint256 &root, uint32_t treeSize,
+                                uint32_t nonce) {
+    out.clear();
+    out.insert(out.end(), MERGE_MINE_PREFIX.begin(), MERGE_MINE_PREFIX.end());
+
+    uint256 rootBE = root;
+    std::reverse(rootBE.begin(), rootBE.end());
+    out.insert(out.end(), rootBE.begin(), rootBE.end());
+
+    out.push_back(treeSize & 0xff);
+    out.push_back((treeSize >> 8) & 0xff);
+    out.push_back((treeSize >> 16) & 0xff);
+    out.push_back((treeSize >> 24) & 0xff);
+
+    out.push_back(nonce & 0xff);
+    out.push_back((nonce >> 8) & 0xff);
+    out.push_back((nonce >> 16) & 0xff);
+    out.push_back((nonce >> 24) & 0xff);
+}
+
+/**
+ * Walk a balanced merkle tree (leaves padded to a power of two) and
+ * extract the inclusion branch for `index`. Also returns the root.
+ */
+void ExtractBranch(const std::vector<uint256> &leaves, uint32_t index,
+                   std::vector<uint256> &branchOut, uint256 &rootOut) {
+    branchOut.clear();
+    std::vector<uint256> level = leaves;
+    size_t idx = index;
+    while (level.size() > 1) {
+        size_t siblingIdx = idx ^ 1;
+        if (siblingIdx < level.size()) {
+            branchOut.push_back(level[siblingIdx]);
+        } else {
+            branchOut.push_back(level[idx]);
+        }
+        std::vector<uint256> nextLevel;
+        for (size_t i = 0; i < level.size(); i += 2) {
+            const uint256 &left = level[i];
+            const uint256 &right =
+                (i + 1 < level.size()) ? level[i + 1] : left;
+            nextLevel.push_back(Hash(Span(left), Span(right)));
+        }
+        level = nextLevel;
+        idx /= 2;
+    }
+    rootOut = level[0];
+}
+} // namespace
 
 static std::unique_ptr<StratumAuxManager> g_globalAuxMgr;
 
@@ -126,103 +185,179 @@ MergeMineCommitment StratumAuxManager::BuildCommitment(
     const uint256 &auxBlockHash,
     const std::vector<uint256> &otherAuxHashes) const {
 
-    MergeMineCommitment commitment;
+    // Backward-compatible single-chain path: only DOGE is placed at the
+    // CalcExpectedMerkleTreeIndex slot. Other leaves are filled into
+    // remaining slots without per-chain validation. Used when the caller
+    // doesn't know the other chains' chain IDs.
+    if (otherAuxHashes.empty()) {
+        MergeMineCommitment commitment;
+        commitment.nTreeSize = 1;
+        commitment.nMergeMineNonce = 0;
+        commitment.nChainIndex = 0;
+        commitment.chainMerkleRoot = auxBlockHash;
+        commitment.perChain[AUXPOW_CHAIN_ID] = {0, {}};
+        SerializeCommitmentPayload(commitment.coinbasePayload,
+                                   commitment.chainMerkleRoot,
+                                   commitment.nTreeSize,
+                                   commitment.nMergeMineNonce);
+        return commitment;
+    }
 
-    // Build the chain merkle tree
+    // Multi-chain without explicit IDs: fall back to placing DOGE only.
+    // Callers wanting strict per-chain placement should use
+    // BuildMultiChainCommitment.
     std::vector<uint256> leaves;
     leaves.push_back(auxBlockHash);
     for (const auto &h : otherAuxHashes) {
         leaves.push_back(h);
     }
 
-    // Tree size must be a power of 2
     uint32_t treeSize = 1;
     uint32_t merkleHeight = 0;
     while (treeSize < leaves.size()) {
         treeSize <<= 1;
         merkleHeight++;
     }
-
-    // Pad to power-of-2 with zero hashes
     while (leaves.size() < treeSize) {
         leaves.push_back(uint256());
     }
 
-    // Find the correct nonce that places Dogecoin at the expected index
-    // using the CalcExpectedMerkleTreeIndex LCG
     uint32_t dogeIndex = 0;
     uint32_t nonce = 0;
-    if (merkleHeight > 0) {
-        for (nonce = 0; nonce < 0xFFFFFFFF; nonce++) {
-            uint32_t idx = CalcExpectedMerkleTreeIndex(nonce, AUXPOW_CHAIN_ID,
-                                                       merkleHeight);
-            if (idx < treeSize) {
-                dogeIndex = idx;
-                break;
-            }
-        }
-        // Place the Doge hash at the correct index
-        if (dogeIndex != 0) {
-            std::swap(leaves[0], leaves[dogeIndex]);
+    for (; nonce < 0xFFFFFFFF; nonce++) {
+        uint32_t idx =
+            CalcExpectedMerkleTreeIndex(nonce, AUXPOW_CHAIN_ID, merkleHeight);
+        if (idx < treeSize) {
+            dogeIndex = idx;
+            break;
         }
     }
+    if (dogeIndex != 0) {
+        std::swap(leaves[0], leaves[dogeIndex]);
+    }
 
+    MergeMineCommitment commitment;
     commitment.nTreeSize = treeSize;
     commitment.nMergeMineNonce = nonce;
     commitment.nChainIndex = dogeIndex;
 
-    // Compute chain merkle branch for the Doge leaf
-    if (merkleHeight == 0) {
-        commitment.chainMerkleRoot = auxBlockHash;
-    } else {
-        // Build the merkle tree and extract the branch for dogeIndex
-        std::vector<uint256> level = leaves;
-        size_t index = dogeIndex;
-        while (level.size() > 1) {
-            size_t siblingIdx = index ^ 1;
-            if (siblingIdx < level.size()) {
-                commitment.chainMerkleBranch.push_back(level[siblingIdx]);
-            } else {
-                commitment.chainMerkleBranch.push_back(level[index]);
-            }
-            std::vector<uint256> nextLevel;
-            for (size_t i = 0; i < level.size(); i += 2) {
-                uint256 left = level[i];
-                uint256 right = (i + 1 < level.size()) ? level[i + 1] : left;
-                nextLevel.push_back(Hash(Span(left), Span(right)));
-            }
-            level = nextLevel;
-            index /= 2;
+    ExtractBranch(leaves, dogeIndex, commitment.chainMerkleBranch,
+                  commitment.chainMerkleRoot);
+    commitment.perChain[AUXPOW_CHAIN_ID] = {dogeIndex,
+                                            commitment.chainMerkleBranch};
+
+    SerializeCommitmentPayload(commitment.coinbasePayload,
+                               commitment.chainMerkleRoot,
+                               commitment.nTreeSize,
+                               commitment.nMergeMineNonce);
+    return commitment;
+}
+
+MergeMineCommitment StratumAuxManager::BuildMultiChainCommitment(
+    const uint256 &dogeAuxHash,
+    const std::vector<std::pair<uint32_t, uint256>> &otherChains) const {
+
+    // Aggregate all chains into a single (chainId -> hash) table. DOGE
+    // counts as a participant under its own AuxPoW chain ID.
+    std::vector<std::pair<uint32_t, uint256>> allChains;
+    allChains.emplace_back(AUXPOW_CHAIN_ID, dogeAuxHash);
+    for (const auto &c : otherChains) {
+        if (c.first == AUXPOW_CHAIN_ID) {
+            // Skip duplicates of our own chain ID; the caller probably made
+            // a mistake and we'd otherwise place two leaves at the same
+            // expected slot.
+            continue;
         }
-        commitment.chainMerkleRoot = level[0];
+        allChains.push_back(c);
     }
 
-    // Build the coinbase payload: MERGE_MINE_PREFIX + root (big-endian) +
-    // treeSize (LE) + nonce (LE)
-    commitment.coinbasePayload.clear();
-    commitment.coinbasePayload.insert(commitment.coinbasePayload.end(),
-                                       MERGE_MINE_PREFIX.begin(),
-                                       MERGE_MINE_PREFIX.end());
+    MergeMineCommitment commitment;
 
-    // Root hash in big-endian (reversed)
-    uint256 rootBE = commitment.chainMerkleRoot;
-    std::reverse(rootBE.begin(), rootBE.end());
-    commitment.coinbasePayload.insert(commitment.coinbasePayload.end(),
-                                       rootBE.begin(), rootBE.end());
+    if (allChains.size() == 1) {
+        commitment.nTreeSize = 1;
+        commitment.nMergeMineNonce = 0;
+        commitment.nChainIndex = 0;
+        commitment.chainMerkleRoot = dogeAuxHash;
+        commitment.perChain[AUXPOW_CHAIN_ID] = {0, {}};
+        SerializeCommitmentPayload(commitment.coinbasePayload,
+                                   commitment.chainMerkleRoot,
+                                   commitment.nTreeSize,
+                                   commitment.nMergeMineNonce);
+        return commitment;
+    }
 
-    // Tree size (4 bytes, little-endian)
-    uint32_t ts = commitment.nTreeSize;
-    commitment.coinbasePayload.push_back(ts & 0xff);
-    commitment.coinbasePayload.push_back((ts >> 8) & 0xff);
-    commitment.coinbasePayload.push_back((ts >> 16) & 0xff);
-    commitment.coinbasePayload.push_back((ts >> 24) & 0xff);
+    // Smallest power of two >= chain count.
+    uint32_t treeSize = 1;
+    uint32_t merkleHeight = 0;
+    while (treeSize < allChains.size()) {
+        treeSize <<= 1;
+        merkleHeight++;
+    }
 
-    // Merge nonce (4 bytes, little-endian)
-    uint32_t mn = commitment.nMergeMineNonce;
-    commitment.coinbasePayload.push_back(mn & 0xff);
-    commitment.coinbasePayload.push_back((mn >> 8) & 0xff);
-    commitment.coinbasePayload.push_back((mn >> 16) & 0xff);
-    commitment.coinbasePayload.push_back((mn >> 24) & 0xff);
+    // Search for a nonce that places every chain at a unique slot. The
+    // address space is 2^32 and collisions are rare for small N, so this
+    // typically terminates within a handful of iterations.
+    uint32_t nonce = 0;
+    std::map<uint32_t, uint32_t> slots; // chainId -> slot
+    for (; nonce < 0xFFFFFFFF; ++nonce) {
+        slots.clear();
+        std::set<uint32_t> used;
+        bool ok = true;
+        for (const auto &[chainId, _hash] : allChains) {
+            uint32_t slot =
+                CalcExpectedMerkleTreeIndex(nonce, chainId, merkleHeight);
+            if (used.count(slot)) {
+                ok = false;
+                break;
+            }
+            used.insert(slot);
+            slots[chainId] = slot;
+        }
+        if (ok) {
+            break;
+        }
+    }
+
+    std::vector<uint256> leaves(treeSize);
+    for (const auto &[chainId, hash] : allChains) {
+        leaves[slots[chainId]] = hash;
+    }
+
+    commitment.nTreeSize = treeSize;
+    commitment.nMergeMineNonce = nonce;
+
+    // Extract the branch for each participating chain. The first iteration
+    // also gives us the canonical root.
+    bool rootSet = false;
+    for (const auto &[chainId, _hash] : allChains) {
+        uint32_t slot = slots[chainId];
+        ChainMerklePath path;
+        path.nChainIndex = slot;
+        uint256 root;
+        ExtractBranch(leaves, slot, path.chainMerkleBranch, root);
+        if (!rootSet) {
+            commitment.chainMerkleRoot = root;
+            rootSet = true;
+        }
+        commitment.perChain[chainId] = std::move(path);
+    }
+
+    // Legacy fields refer to the DOGE leaf for backward compatibility.
+    auto dogeIt = commitment.perChain.find(AUXPOW_CHAIN_ID);
+    if (dogeIt != commitment.perChain.end()) {
+        commitment.nChainIndex = dogeIt->second.nChainIndex;
+        commitment.chainMerkleBranch = dogeIt->second.chainMerkleBranch;
+    }
+
+    SerializeCommitmentPayload(commitment.coinbasePayload,
+                               commitment.chainMerkleRoot,
+                               commitment.nTreeSize,
+                               commitment.nMergeMineNonce);
+
+    LogPrint(BCLog::MERGEMINE,
+             "BuildMultiChainCommitment: %zu chain(s), treeSize=%u, "
+             "nonce=%u, dogeIndex=%u\n",
+             allChains.size(), treeSize, nonce, commitment.nChainIndex);
 
     return commitment;
 }

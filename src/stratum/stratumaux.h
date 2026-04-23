@@ -72,10 +72,29 @@ public:
      * Build the merge-mine commitment data for embedding in a parent coinbase.
      * @param auxBlockHash The SHA-256d hash of the Dogecoin block header.
      * @param otherAuxHashes Hashes of other aux chains (for multi-aux mining).
+     *
+     * Single-chain backward-compatible variant. Other chains' chain IDs are
+     * unknown so they get placed in remaining tree slots in order.
      */
     MergeMineCommitment
     BuildCommitment(const uint256 &auxBlockHash,
                     const std::vector<uint256> &otherAuxHashes = {}) const;
+
+    /**
+     * Multi-chain variant of BuildCommitment that places each child chain at
+     * exactly the slot expected by `CalcExpectedMerkleTreeIndex(nonce,
+     * chainId, merkleHeight)`. This is required so receiving aux nodes
+     * accept the AuxPoW proof (their CheckAuxBlockHash recomputes the
+     * expected slot).
+     *
+     * @param dogeAuxHash    SHA-256d Doge aux block hash (parent leaf).
+     * @param otherChains    [chainId, auxHash] pairs for child chains.
+     * @return MergeMineCommitment with `perChain` populated for every
+     *         participating chain (including DOGE under its own chainId).
+     */
+    MergeMineCommitment BuildMultiChainCommitment(
+        const uint256 &dogeAuxHash,
+        const std::vector<std::pair<uint32_t, uint256>> &otherChains) const;
 
     /**
      * Assemble a CAuxPow from parent chain submission data.

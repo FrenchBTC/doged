@@ -22,9 +22,12 @@ BOOST_AUTO_TEST_CASE(hash_to_stratum_hex_length) {
 }
 
 BOOST_AUTO_TEST_CASE(uint32_to_stratum_hex_format) {
-    // 0x12345678 in little-endian hex = "78563412"
+    // Stratum nVersion / nBits / nTime fields are sent as the BIG-ENDIAN
+    // hex representation of the 32-bit value, so that strtoul on the
+    // miner side recovers the original value before re-serialising it
+    // little-endian into the block header. 0x12345678 → "12345678".
     std::string hex = Uint32ToStratumHex(0x12345678);
-    BOOST_CHECK_EQUAL(hex, "78563412");
+    BOOST_CHECK_EQUAL(hex, "12345678");
 }
 
 BOOST_AUTO_TEST_CASE(uint32_to_stratum_hex_zero) {

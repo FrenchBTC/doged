@@ -182,15 +182,20 @@ util::Result<StratumJob> StratumJobManager::CreateJob(bool cleanJobs) {
         uint256 dogeAuxHash = hdr.GetHash();
 
         auto allWork = mm->GetAllWorkSorted();
-        std::vector<uint256> otherHashes;
+        std::vector<std::pair<uint32_t, uint256>> otherChains;
         for (const auto &w : allWork) {
-            otherHashes.push_back(w.auxHash);
+            otherChains.emplace_back(w.chainId, w.auxHash);
             auxTargets.push_back({w.chainName, w.chainId, w.auxHash, w.nBits});
         }
 
         auto *auxMgr = GetGlobalAuxManager();
         if (auxMgr) {
-            commitment = auxMgr->BuildCommitment(dogeAuxHash, otherHashes);
+            // Use the multi-chain commitment so each child chain ends up at
+            // exactly its CalcExpectedMerkleTreeIndex slot. Receiving aux
+            // nodes (e.g. lotusd) re-derive that slot in CheckAuxBlockHash
+            // and would otherwise reject the proof.
+            commitment = auxMgr->BuildMultiChainCommitment(dogeAuxHash,
+                                                            otherChains);
         }
 
         if (!commitment.coinbasePayload.empty()) {
@@ -309,11 +314,21 @@ std::string HashToStratumHex(const uint256 &hash) {
 }
 
 std::string Uint32ToStratumHex(uint32_t val) {
+    // Stratum spec sends nVersion / nBits / nTime as the BIG-ENDIAN hex
+    // representation of the 32-bit value (i.e. so that
+    //   strtoul(s, NULL, 16) == val
+    // on the miner side). Standard miners (cpuminer, cgminer, sgminer,
+    // ccminer, …) all parse the field this way and then re-serialise it
+    // little-endian into the block header. Emitting little-endian bytes
+    // here would make every external miner reconstruct a header with a
+    // byte-swapped value, producing an unrelated scrypt hash and making
+    // the server reject every share with "Low difficulty share" (error
+    // 23) — even though the share is internally consistent.
     uint8_t buf[4];
-    buf[0] = val & 0xff;
-    buf[1] = (val >> 8) & 0xff;
-    buf[2] = (val >> 16) & 0xff;
-    buf[3] = (val >> 24) & 0xff;
+    buf[0] = (val >> 24) & 0xff;
+    buf[1] = (val >> 16) & 0xff;
+    buf[2] = (val >> 8) & 0xff;
+    buf[3] = val & 0xff;
     return HexStr(Span<const uint8_t>(buf, 4));
 }
 

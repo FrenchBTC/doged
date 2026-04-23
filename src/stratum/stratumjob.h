@@ -29,9 +29,23 @@ struct CBlockTemplate;
 namespace stratum {
 
 /**
+ * Per-chain placement (slot + branch) inside the merge-mine merkle tree.
+ * One entry per child chain participating in the commitment.
+ */
+struct ChainMerklePath {
+    uint32_t nChainIndex = 0;
+    std::vector<uint256> chainMerkleBranch;
+};
+
+/**
  * Data to embed in the parent chain's coinbase transaction for merge-mining.
  * Moved here (from stratumaux.h) so StratumJob can hold it without circular
  * includes.
+ *
+ * The legacy `chainMerkleBranch` / `nChainIndex` fields refer to the
+ * Dogecoin (parent) leaf and are kept for backward compatibility. For
+ * multi-aux mining each child chain's path is also stored in `perChain`,
+ * keyed by AuxPoW chain ID, so AuxPow proofs can be assembled per chain.
  */
 struct MergeMineCommitment {
     std::vector<uint8_t> coinbasePayload; // fabe6d6d + root + treesize + nonce
@@ -40,6 +54,8 @@ struct MergeMineCommitment {
     uint32_t nMergeMineNonce = 0;
     uint32_t nChainIndex = 0;
     std::vector<uint256> chainMerkleBranch;
+    /** Per-chain merkle path keyed by AuxPoW chain ID. */
+    std::map<uint32_t, ChainMerklePath> perChain;
 };
 
 /**

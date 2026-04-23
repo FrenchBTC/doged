@@ -312,36 +312,53 @@ std::string BuildAuxPowForChain(const StratumJob &job,
         }
     }
 
-    // 4. Compute the chain merkle branch for this specific chain
-    //    from the job's commitment data.
-    //    For DOGE's own commitment, we use the stored branch directly.
-    //    For other chains, we need to find the chain's leaf position and
-    //    compute its branch in the aux merkle tree.
+    // 4. Look up the per-chain merkle path for `chainName`. The merge-mine
+    //    commitment stored on the job already contains, for every
+    //    participating chain, the (slot, branch) pair that proves that
+    //    chain's aux hash is committed to in the parent coinbase. The
+    //    receiving node's CheckAuxBlockHash recomputes the expected slot
+    //    via CalcExpectedMerkleTreeIndex(nonce, chainId, height) and
+    //    rejects the proof unless we use that exact slot.
     const auto &commit = job.mergeCommitment;
+
+    uint32_t chainId = 0;
+    bool foundChainId = false;
+    for (const auto &t : job.auxChainTargets) {
+        if (t.chainName == chainName) {
+            chainId = t.chainId;
+            foundChainId = true;
+            break;
+        }
+    }
+
+    std::vector<uint256> chainMerkleBranch;
+    uint32_t chainIndex = 0;
+    if (foundChainId) {
+        auto it = commit.perChain.find(chainId);
+        if (it != commit.perChain.end()) {
+            chainMerkleBranch = it->second.chainMerkleBranch;
+            chainIndex = it->second.nChainIndex;
+        }
+    }
+
+    // Fallback: if the per-chain entry is missing (e.g. legacy
+    // single-chain commitment built from BuildCommitment with empty
+    // otherAuxHashes), use the legacy DOGE-leaf fields.
+    if (chainMerkleBranch.empty() && chainIndex == 0) {
+        chainMerkleBranch = commit.chainMerkleBranch;
+        chainIndex = commit.nChainIndex;
+    }
 
     // 5. Serialize the CAuxPow
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
 
-    // coinbaseTx
     ss << coinbaseTx;
-
-    // hashBlock (parent block's hash — the DOGE parent block header hash)
     uint256 parentBlockHash = parentHeader.GetHash();
     ss << parentBlockHash;
-
-    // vMerkleBranch (coinbase merkle branch in the parent block)
     ss << coinbaseMerkleBranch;
-
-    // nIndex (coinbase is always at index 0)
     ss << (uint32_t)0;
-
-    // vChainMerkleBranch
-    ss << commit.chainMerkleBranch;
-
-    // nChainIndex
-    ss << commit.nChainIndex;
-
-    // parentBlock header
+    ss << chainMerkleBranch;
+    ss << chainIndex;
     ss << parentHeader;
 
     return HexStr(ss);
